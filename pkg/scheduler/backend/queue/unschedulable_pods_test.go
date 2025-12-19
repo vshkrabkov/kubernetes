@@ -61,9 +61,15 @@ func TestUnschedulablePods(t *testing.T) {
 	updatedPods[1] = pods[1].DeepCopy()
 	updatedPods[3] = pods[3].DeepCopy()
 
+	gated := func(p *v1.Pod, upm *unschedulablePods) bool {
+		pInfo := upm.get(p)
+		return pInfo != nil && pInfo.Gated()
+	}
+
 	tests := []struct {
 		name                         string
 		podsToAdd                    []*v1.Pod
+		gatedPodsToAdd               []*v1.Pod
 		expectedMapAfterAdd          map[string]*framework.QueuedPodInfo
 		podsToUpdate                 []*v1.Pod
 		expectedMapAfterUpdate       map[string]*framework.QueuedPodInfo
@@ -132,6 +138,48 @@ func TestUnschedulablePods(t *testing.T) {
 			exptectedUnschedulableMetric: 1,
 			exptectedGatedMetric:         0,
 		},
+		{
+			name:           "add/delete gated pods",
+			gatedPodsToAdd: []*v1.Pod{pods[0], pods[1]},
+			expectedMapAfterAdd: map[string]*framework.QueuedPodInfo{
+				util.GetPodFullName(pods[0]): {PodInfo: mustNewTestPodInfo(t, pods[0]), GatingPlugin: "test", UnschedulablePlugins: sets.New[string]("test")},
+				util.GetPodFullName(pods[1]): {PodInfo: mustNewTestPodInfo(t, pods[1]), GatingPlugin: "test", UnschedulablePlugins: sets.New[string]("test")},
+			},
+			podsToDelete: []*v1.Pod{pods[0]},
+			expectedMapAfterDelete: map[string]*framework.QueuedPodInfo{
+				util.GetPodFullName(pods[1]): {PodInfo: mustNewTestPodInfo(t, pods[1]), GatingPlugin: "test", UnschedulablePlugins: sets.New[string]("test")},
+			},
+			exptectedUnschedulableMetric: 0,
+			exptectedGatedMetric:         1,
+		},
+		{
+			name:           "add gated and non-gated pods, then delete",
+			podsToAdd:      []*v1.Pod{pods[0]},
+			gatedPodsToAdd: []*v1.Pod{pods[1]},
+			expectedMapAfterAdd: map[string]*framework.QueuedPodInfo{
+				util.GetPodFullName(pods[0]): {PodInfo: mustNewTestPodInfo(t, pods[0]), UnschedulablePlugins: sets.New[string]()},
+				util.GetPodFullName(pods[1]): {PodInfo: mustNewTestPodInfo(t, pods[1]), GatingPlugin: "test", UnschedulablePlugins: sets.New[string]("test")},
+			},
+			podsToDelete:                 []*v1.Pod{pods[0], pods[1]},
+			expectedMapAfterDelete:       map[string]*framework.QueuedPodInfo{},
+			exptectedUnschedulableMetric: 0,
+			exptectedGatedMetric:         0,
+		},
+		{
+			name:           "add gated pod, update it to non-gated",
+			gatedPodsToAdd: []*v1.Pod{pods[0]},
+			expectedMapAfterAdd: map[string]*framework.QueuedPodInfo{
+				util.GetPodFullName(pods[0]): {PodInfo: mustNewTestPodInfo(t, pods[0]), GatingPlugin: "test", UnschedulablePlugins: sets.New[string]("test")},
+			},
+			podsToUpdate: []*v1.Pod{updatedPods[0]},
+			expectedMapAfterUpdate: map[string]*framework.QueuedPodInfo{
+				util.GetPodFullName(pods[0]): {PodInfo: mustNewTestPodInfo(t, updatedPods[0]), UnschedulablePlugins: sets.New[string]()},
+			},
+			podsToDelete:                 []*v1.Pod{pods[0]},
+			expectedMapAfterDelete:       map[string]*framework.QueuedPodInfo{},
+			exptectedUnschedulableMetric: 0,
+			exptectedGatedMetric:         0,
+		},
 	}
 
 	for _, test := range tests {
@@ -142,20 +190,26 @@ func TestUnschedulablePods(t *testing.T) {
 			for _, p := range test.podsToAdd {
 				upm.addOrUpdate(newQueuedPodInfoForLookup(p), false, framework.EventUnscheduledPodAdd.Label())
 			}
+			for _, p := range test.gatedPodsToAdd {
+				pInfo := newQueuedPodInfoForLookup(p)
+				pInfo.GatingPlugin = "test"
+				pInfo.UnschedulablePlugins.Insert("test")
+				upm.addOrUpdate(pInfo, false, framework.EventUnscheduledPodAdd.Label())
+			}
 			if diff := cmp.Diff(test.expectedMapAfterAdd, upm.podInfoMap, cmpopts.IgnoreUnexported(framework.PodInfo{})); diff != "" {
 				t.Errorf("Unexpected map after adding pods(-want, +got):\n%s", diff)
 			}
 
 			if len(test.podsToUpdate) > 0 {
 				for _, p := range test.podsToUpdate {
-					upm.addOrUpdate(newQueuedPodInfoForLookup(p), false, framework.EventUnscheduledPodUpdate.Label())
+					upm.addOrUpdate(newQueuedPodInfoForLookup(p), gated(p, upm), framework.EventUnscheduledPodUpdate.Label())
 				}
 				if diff := cmp.Diff(test.expectedMapAfterUpdate, upm.podInfoMap, cmpopts.IgnoreUnexported(framework.PodInfo{})); diff != "" {
 					t.Errorf("Unexpected map after updating pods (-want, +got):\n%s", diff)
 				}
 			}
 			for _, p := range test.podsToDelete {
-				upm.delete(p, false)
+				upm.delete(p, gated(p, upm))
 			}
 			if diff := cmp.Diff(test.expectedMapAfterDelete, upm.podInfoMap, cmpopts.IgnoreUnexported(framework.PodInfo{})); diff != "" {
 				t.Errorf("Unexpected map after deleting pods (-want, +got):\n%s", diff)
