@@ -1093,6 +1093,19 @@ const (
 	//
 	// Enables support for joining Windows containers to a hosts' network namespace.
 	WindowsHostNetwork featuregate.Feature = "WindowsHostNetwork"
+
+	// owner: @wojtek-t
+	// kep: https://kep.k8s.io/5710
+	//
+	// Enables support for workload-aware preemption in pod group scheduling cycle
+	// and related PodGroup and Workload API fields.
+	WorkloadAwarePreemption featuregate.Feature = "WorkloadAwarePreemption"
+
+	// owner: @44past4
+	// kep: https://kep.k8s.io/5732
+	//
+	// Enables support for 'DesiredCount' optional field for basic and gang policy scheduling.
+	PodGroupDesiredCount featuregate.Feature = "PodGroupDesiredCount"
 )
 
 // defaultVersionedKubernetesFeatureGates consists of all known Kubernetes-specific feature keys with VersionedSpecs.
@@ -1904,6 +1917,14 @@ var defaultVersionedKubernetesFeatureGates = map[featuregate.Feature]featuregate
 	WindowsHostNetwork: {
 		{Version: version.MustParse("1.26"), Default: false, PreRelease: featuregate.Alpha},
 		{Version: version.MustParse("1.33"), Default: false, PreRelease: featuregate.Deprecated},
+	},
+
+	WorkloadAwarePreemption: {
+		{Version: version.MustParse("1.36"), Default: false, PreRelease: featuregate.Alpha},
+	},
+
+	PodGroupDesiredCount: {
+		{Version: version.MustParse("1.36"), Default: false, PreRelease: featuregate.Alpha},
 	},
 
 	apiextensionsfeatures.CRDObservedGenerationTracking: {
