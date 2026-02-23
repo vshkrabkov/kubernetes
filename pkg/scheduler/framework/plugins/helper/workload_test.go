@@ -1,5 +1,5 @@
 /*
-Copyright The Kubernetes Authors.
+Copyright 2025 The Kubernetes Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,141 +22,106 @@ import (
 	"github.com/google/go-cmp/cmp"
 	v1 "k8s.io/api/core/v1"
 	schedulingapi "k8s.io/api/scheduling/v1alpha1"
+	"k8s.io/klog/v2/ktesting"
+	fwk "k8s.io/kube-scheduler/framework"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
 )
 
-func TestMatchingWorkloadReference(t *testing.T) {
-	workloadRef := func(name, podGroup, podGroupReplicaKey string) *v1.WorkloadReference {
-		return &v1.WorkloadReference{
-			Name:               name,
-			PodGroup:           podGroup,
-			PodGroupReplicaKey: podGroupReplicaKey,
-		}
-	}
-	testCases := []struct {
-		name     string
-		pod1     *v1.Pod
-		pod2     *v1.Pod
-		expected bool
+func Test_IsSchedulableAfterWorkloadAdded(t *testing.T) {
+	tests := []struct {
+		name         string
+		pod          *v1.Pod
+		newWorkload  *schedulingapi.Workload
+		expectedHint fwk.QueueingHint
 	}{
 		{
-			name:     "same pod with workloadRef",
-			pod1:     st.MakePod().Name("pod1").Namespace("test").WorkloadRef(workloadRef("name", "pgName", "pgKey")).Obj(),
-			pod2:     st.MakePod().Name("pod1").Namespace("test").WorkloadRef(workloadRef("name", "pgName", "pgKey")).Obj(),
-			expected: true,
+			name:         "add a workload which matches the pod's workload name",
+			pod:          st.MakePod().Name("p").WorkloadRef(&v1.WorkloadReference{Name: "w1", PodGroup: "pg"}).Obj(),
+			newWorkload:  st.MakeWorkload().Name("w1").PodGroup(st.MakePodGroup().Name("pg").MinCount(1).Obj()).Obj(),
+			expectedHint: fwk.Queue,
 		},
 		{
-			name:     "different pods, same workloadRef",
-			pod1:     st.MakePod().Name("pod1").Namespace("test").WorkloadRef(workloadRef("name", "pgName", "pgKey")).Obj(),
-			pod2:     st.MakePod().Name("pod2").Namespace("test").WorkloadRef(workloadRef("name", "pgName", "pgKey")).Obj(),
-			expected: true,
+			name:         "add a workload which doesn't match the pod's workload name",
+			pod:          st.MakePod().Name("p").WorkloadRef(&v1.WorkloadReference{Name: "w2", PodGroup: "pg"}).Obj(),
+			newWorkload:  st.MakeWorkload().Name("w1").PodGroup(st.MakePodGroup().Name("pg").MinCount(1).Obj()).Obj(),
+			expectedHint: fwk.QueueSkip,
 		},
 		{
-			name:     "same pod but no workloadRef",
-			pod1:     st.MakePod().Name("pod1").Namespace("test").Obj(),
-			pod2:     st.MakePod().Name("pod1").Namespace("test").Obj(),
-			expected: false,
-		},
-		{
-			name:     "different pods, only one with workloadRef",
-			pod1:     st.MakePod().Name("pod1").Namespace("test").WorkloadRef(workloadRef("name", "pgName", "pgKey")).Obj(),
-			pod2:     st.MakePod().Name("pod2").Namespace("test").Obj(),
-			expected: false,
-		},
-		{
-			name:     "same workloadRef but different namespaces",
-			pod1:     st.MakePod().Name("pod1").Namespace("test1").WorkloadRef(workloadRef("name", "pgName", "pgKey")).Obj(),
-			pod2:     st.MakePod().Name("pod2").Namespace("test2").WorkloadRef(workloadRef("name", "pgName", "pgKey")).Obj(),
-			expected: false,
-		},
-		{
-			name:     "same workload but different pod group",
-			pod1:     st.MakePod().Name("pod1").Namespace("test").WorkloadRef(workloadRef("name", "pgName1", "pgKey")).Obj(),
-			pod2:     st.MakePod().Name("pod2").Namespace("test").WorkloadRef(workloadRef("name", "pgName2", "pgKey")).Obj(),
-			expected: false,
-		},
-		{
-			name:     "same workload but different pod group replica key",
-			pod1:     st.MakePod().Name("pod1").Namespace("test").WorkloadRef(workloadRef("name", "pgName", "pgKey1")).Obj(),
-			pod2:     st.MakePod().Name("pod2").Namespace("test").WorkloadRef(workloadRef("name", "pgName", "pgKey2")).Obj(),
-			expected: false,
-		},
-		{
-			name:     "same pod group but different workload name",
-			pod1:     st.MakePod().Name("pod1").Namespace("test").WorkloadRef(workloadRef("name1", "pgName", "pgKey")).Obj(),
-			pod2:     st.MakePod().Name("pod2").Namespace("test").WorkloadRef(workloadRef("name2", "pgName", "pgKey")).Obj(),
-			expected: false,
+			name:         "add a workload which doesn't match the pod's workload namespace",
+			pod:          st.MakePod().Namespace("ns1").Name("p").WorkloadRef(&v1.WorkloadReference{Name: "w1", PodGroup: "pg"}).Obj(),
+			newWorkload:  st.MakeWorkload().Namespace("ns2").Name("w1").PodGroup(st.MakePodGroup().Name("pg").MinCount(1).Obj()).Obj(),
+			expectedHint: fwk.QueueSkip,
 		},
 	}
-	for _, tt := range testCases {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := MatchingWorkloadReference(tt.pod1, tt.pod2); got != tt.expected {
-				t.Errorf("MatchingWorkloadReference() = %v, want %v", got, tt.expected)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			logger, _ := ktesting.NewTestContext(t)
+
+			actualHint, err := IsSchedulableAfterWorkloadAdded(logger, tc.pod, nil, tc.newWorkload)
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
+			if diff := cmp.Diff(tc.expectedHint, actualHint); diff != "" {
+				t.Errorf("Expected QueuingHint doesn't match (-want,+got):\n%s", diff)
 			}
 		})
 	}
 }
 
-func TestPodGroupPolicy(t *testing.T) {
-	workload := &schedulingapi.Workload{
-		Spec: schedulingapi.WorkloadSpec{
-			PodGroups: []schedulingapi.PodGroup{
-				{
-					Name: "pg1",
-					Policy: schedulingapi.PodGroupPolicy{
-						Gang: &schedulingapi.GangSchedulingPolicy{
-							MinCount: 10,
-						},
-					},
-				},
-				{
-					Name: "pg2",
-					Policy: schedulingapi.PodGroupPolicy{
-						Basic: &schedulingapi.BasicSchedulingPolicy{},
-					},
-				},
-			},
-		},
-	}
-	testCases := []struct {
-		name           string
-		podGroupName   string
-		expectedPolicy schedulingapi.PodGroupPolicy
-		expectedOk     bool
+func Test_IsSchedulableAfterPodAdded(t *testing.T) {
+	tests := []struct {
+		name         string
+		pod          *v1.Pod
+		newPod       *v1.Pod
+		expectedHint fwk.QueueingHint
 	}{
 		{
-			name:         "gang policy",
-			podGroupName: "pg1",
-			expectedPolicy: schedulingapi.PodGroupPolicy{
-				Gang: &schedulingapi.GangSchedulingPolicy{
-					MinCount: 10,
-				},
-			},
-			expectedOk: true,
+			name:         "add a newPod which matches the pod's workload and pod group",
+			pod:          st.MakePod().Name("p").WorkloadRef(&v1.WorkloadReference{Name: "w1", PodGroup: "pg"}).Obj(),
+			newPod:       st.MakePod().WorkloadRef(&v1.WorkloadReference{Name: "w1", PodGroup: "pg"}).Obj(),
+			expectedHint: fwk.Queue,
 		},
 		{
-			name:         "basic policy",
-			podGroupName: "pg2",
-			expectedPolicy: schedulingapi.PodGroupPolicy{
-				Basic: &schedulingapi.BasicSchedulingPolicy{},
-			},
-			expectedOk: true,
+			name:         "add a newPod which matches the pod's workload, pod group and replica key",
+			pod:          st.MakePod().Name("p").WorkloadRef(&v1.WorkloadReference{Name: "w1", PodGroup: "pg", PodGroupReplicaKey: "3"}).Obj(),
+			newPod:       st.MakePod().WorkloadRef(&v1.WorkloadReference{Name: "w1", PodGroup: "pg", PodGroupReplicaKey: "3"}).Obj(),
+			expectedHint: fwk.Queue,
 		},
 		{
-			name:           "pod group not found - return empty policy and false",
-			podGroupName:   "pg3",
-			expectedPolicy: schedulingapi.PodGroupPolicy{},
-			expectedOk:     false,
+			name:         "add a newPod which doesn't match the pod's namespace",
+			pod:          st.MakePod().Name("p").WorkloadRef(&v1.WorkloadReference{Name: "w1", PodGroup: "pg"}).Obj(),
+			newPod:       st.MakePod().Namespace("foo").WorkloadRef(&v1.WorkloadReference{Name: "w1", PodGroup: "pg"}).Obj(),
+			expectedHint: fwk.QueueSkip,
+		},
+		{
+			name:         "add a newPod which doesn't match the pod's workload name",
+			pod:          st.MakePod().Name("p").WorkloadRef(&v1.WorkloadReference{Name: "w1", PodGroup: "pg"}).Obj(),
+			newPod:       st.MakePod().WorkloadRef(&v1.WorkloadReference{Name: "w2", PodGroup: "pg"}).Obj(),
+			expectedHint: fwk.QueueSkip,
+		},
+		{
+			name:         "add a newPod which doesn't match the pod's pod group name",
+			pod:          st.MakePod().Name("p").WorkloadRef(&v1.WorkloadReference{Name: "w1", PodGroup: "pg"}).Obj(),
+			newPod:       st.MakePod().WorkloadRef(&v1.WorkloadReference{Name: "w1", PodGroup: "pg2"}).Obj(),
+			expectedHint: fwk.QueueSkip,
+		},
+		{
+			name:         "add a newPod which doesn't match the pod's replica key",
+			pod:          st.MakePod().Name("p").WorkloadRef(&v1.WorkloadReference{Name: "w1", PodGroup: "pg", PodGroupReplicaKey: "3"}).Obj(),
+			newPod:       st.MakePod().WorkloadRef(&v1.WorkloadReference{Name: "w1", PodGroup: "pg", PodGroupReplicaKey: "4"}).Obj(),
+			expectedHint: fwk.QueueSkip,
 		},
 	}
-	for _, tt := range testCases {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := PodGroupPolicy(workload, tt.podGroupName)
-			if ok != tt.expectedOk {
-				t.Errorf("PodGroupPolicy() ok: %v, want: %v", ok, tt.expectedOk)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			logger, _ := ktesting.NewTestContext(t)
+
+			actualHint, err := IsSchedulableAfterPodAdded(logger, tc.pod, nil, tc.newPod)
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
 			}
-			if diff := cmp.Diff(got, tt.expectedPolicy); diff != "" {
-				t.Errorf("PodGroupPolicy() policy (-want,+got):\n%s", diff)
+			if diff := cmp.Diff(tc.expectedHint, actualHint); diff != "" {
+				t.Errorf("Expected QueuingHint doesn't match (-want,+got):\n%s", diff)
 			}
 		})
 	}

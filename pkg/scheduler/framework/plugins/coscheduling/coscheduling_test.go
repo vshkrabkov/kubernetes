@@ -52,6 +52,8 @@ func TestCoschedulingFlow(t *testing.T) {
 		PodGroup(st.MakePodGroup().Name("pg-desired").BasicPolicy().DesiredCount(4).Obj()).Obj()
 	basicPolicyWlNoDesireCount := st.MakeWorkload().Namespace("ns1").Name("basic-wl").
 		PodGroup(st.MakePodGroup().Name("pg1").BasicPolicy().Obj()).Obj()
+	gangPolicyWlWithDesired := st.MakeWorkload().Namespace("ns1").Name("gang-wl-desired").
+		PodGroup(st.MakePodGroup().Name("pg-desired").MinCount(2).DesiredCount(3).Obj()).Obj()
 
 	p1 := st.MakePod().Namespace("ns1").Name("p1").UID("p1").
 		WorkloadRef(&v1.WorkloadReference{Name: "gang-wl", PodGroup: "pg1"}).Obj()
@@ -63,6 +65,13 @@ func TestCoschedulingFlow(t *testing.T) {
 		WorkloadRef(&v1.WorkloadReference{Name: "basic-wl-desired", PodGroup: "pg-desired"}).Obj()
 	p5 := st.MakePod().Namespace("ns1").Name("p5").UID("p5").
 		WorkloadRef(&v1.WorkloadReference{Name: "basic-wl-desired", PodGroup: "pg-desired"}).Obj()
+
+	gp1 := st.MakePod().Namespace("ns1").Name("gp1").UID("gp1").
+		WorkloadRef(&v1.WorkloadReference{Name: "gang-wl-desired", PodGroup: "pg-desired"}).Obj()
+	gp2 := st.MakePod().Namespace("ns1").Name("gp2").UID("gp2").
+		WorkloadRef(&v1.WorkloadReference{Name: "gang-wl-desired", PodGroup: "pg-desired"}).Obj()
+	gp3 := st.MakePod().Namespace("ns1").Name("gp3").UID("gp3").
+		WorkloadRef(&v1.WorkloadReference{Name: "gang-wl-desired", PodGroup: "pg-desired"}).Obj()
 
 	nonGangPod := st.MakePod().Namespace("ns1").Name("non-gang").UID("non-gang").Obj()
 	wronPgPod := st.MakePod().Namespace("ns1").Name("wrong-pg").UID("wrong-pg").WorkloadRef(&v1.WorkloadReference{Name: "gang-wl", PodGroup: "wrong"}).Obj()
@@ -78,7 +87,7 @@ func TestCoschedulingFlow(t *testing.T) {
 		{
 			name:                       "non-gang pod succeeds immediately",
 			enablePodGroupDesiredCount: true,
-			initialWorkloads:           []*schedulingapi.Workload{gangPolicyWl, basicPolicyWl, basicPolicyWlNoDesireCount},
+			initialWorkloads:           []*schedulingapi.Workload{gangPolicyWl, basicPolicyWl, basicPolicyWlNoDesireCount, gangPolicyWlWithDesired},
 			pod:                        nonGangPod,
 			wantPreEnqueueStatus:       nil,
 		},
@@ -122,6 +131,22 @@ func TestCoschedulingFlow(t *testing.T) {
 			enablePodGroupDesiredCount: false,
 			initialWorkloads:           []*schedulingapi.Workload{gangPolicyWl, basicPolicyWl, basicPolicyWlNoDesireCount},
 			pod:                        p2,
+			wantPreEnqueueStatus:       nil,
+		},
+		{
+			name:                       "gang pod (Gang Policy) fails PreEnqueue when DesiredCount Not Met",
+			enablePodGroupDesiredCount: true,
+			initialWorkloads:           []*schedulingapi.Workload{gangPolicyWl, basicPolicyWl, basicPolicyWlNoDesireCount, gangPolicyWlWithDesired},
+			initialPods:                []*v1.Pod{gp1},
+			pod:                        gp2,
+			wantPreEnqueueStatus:       fwk.NewStatus(fwk.UnschedulableAndUnresolvable, "introducing delay while all pods count: 2 doesn't satisfy desired count requirement: 3"),
+		},
+		{
+			name:                       "gang pod (Gang Policy) succeeds PreEnqueue when DesiredCount Met",
+			enablePodGroupDesiredCount: true,
+			initialWorkloads:           []*schedulingapi.Workload{gangPolicyWl, basicPolicyWl, basicPolicyWlNoDesireCount, gangPolicyWlWithDesired},
+			initialPods:                []*v1.Pod{gp1, gp2},
+			pod:                        gp3,
 			wantPreEnqueueStatus:       nil,
 		},
 	}

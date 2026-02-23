@@ -27,7 +27,7 @@ import (
 	"k8s.io/klog/v2"
 	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/feature"
-	pluginHelper "k8s.io/kubernetes/pkg/scheduler/framework/plugins/helper"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/helper"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/names"
 )
 
@@ -39,9 +39,9 @@ const (
 // Coscheduling is a plugin that facilitates best-effort scheduling for pods
 // belonging to a Workload with a Basic scheduling policy.
 type Coscheduling struct {
-	handle                  fwk.Handle
-	workloadLister          schedulinglisters.WorkloadLister
-	podGroupPolicyEvaluator *pluginHelper.PodGroupPolicyEvaluator
+	handle                     fwk.Handle
+	workloadLister             schedulinglisters.WorkloadLister
+	enablePodGroupDesiredCount bool
 }
 
 var _ fwk.EnqueueExtensions = &Coscheduling{}
@@ -49,9 +49,9 @@ var _ fwk.PreEnqueuePlugin = &Coscheduling{}
 
 func New(_ context.Context, _ runtime.Object, fh fwk.Handle, fts feature.Features) (fwk.Plugin, error) {
 	return &Coscheduling{
-		handle:                  fh,
-		workloadLister:          fh.SharedInformerFactory().Scheduling().V1alpha1().Workloads().Lister(),
-		podGroupPolicyEvaluator: pluginHelper.New(fts.EnablePodGroupDesiredCount),
+		handle:                     fh,
+		workloadLister:             fh.SharedInformerFactory().Scheduling().V1alpha1().Workloads().Lister(),
+		enablePodGroupDesiredCount: fts.EnablePodGroupDesiredCount,
 	}, nil
 }
 
@@ -63,10 +63,10 @@ func (pl *Coscheduling) EventsToRegister(_ context.Context) ([]fwk.ClusterEventW
 	return []fwk.ClusterEventWithHint{
 		// A new pod being added might be the one that help meeting its DesiredCount requirement.
 		// Workload reference is immutable, so there is no need to subscribe on Pod/Update event.
-		{Event: fwk.ClusterEvent{Resource: fwk.Pod, ActionType: fwk.Add}, QueueingHintFn: pl.podGroupPolicyEvaluator.IsReEvaluatingNeedAfterPodAdded},
+		{Event: fwk.ClusterEvent{Resource: fwk.Pod, ActionType: fwk.Add}, QueueingHintFn: helper.IsSchedulableAfterPodAdded},
 		// A Workload being added can be making a waiting gang schedulable.
 		// Workload's PodGroups are immutable, so there's no need to handle Workload/Update event.
-		{Event: fwk.ClusterEvent{Resource: fwk.Workload, ActionType: fwk.Add}, QueueingHintFn: pl.podGroupPolicyEvaluator.IsReEvaluatingNeedAfterWorkloadAdded},
+		{Event: fwk.ClusterEvent{Resource: fwk.Workload, ActionType: fwk.Add}, QueueingHintFn: helper.IsSchedulableAfterWorkloadAdded},
 	}, nil
 }
 
@@ -88,20 +88,27 @@ func (pl *Coscheduling) PreEnqueue(ctx context.Context, pod *v1.Pod) *fwk.Status
 		return fwk.AsStatus(fmt.Errorf("failed to get workload %s/%s", namespace, workloadRef.Name))
 	}
 
-	policy, ok := pluginHelper.PodGroupPolicy(workload, workloadRef.PodGroup)
+	policy, ok := helper.PodGroupPolicy(workload, workloadRef.PodGroup)
 	if !ok {
 		return fwk.NewStatus(fwk.UnschedulableAndUnresolvable, fmt.Sprintf("pod group %q doesn't exist for a workload %q", workloadRef.PodGroup, workload.Name))
 	}
-	// This plugin only cares about pods with a Basic scheduling policy.
-	if policy.Basic == nil {
-		return nil
-	}
 
-	podGroupInfo, err := pl.handle.WorkloadManager().PodGroupState(namespace, workloadRef)
+	podGroupState, err := pl.handle.WorkloadManager().PodGroupState(namespace, workloadRef)
 	if err != nil {
 		return fwk.AsStatus(err)
 	}
-	allPods := podGroupInfo.AllPods()
+	allPods := podGroupState.AllPods()
 
-	return pl.podGroupPolicyEvaluator.PreEnqueue(pod, policy, len(allPods))
+	var desiredCount *int32
+	if policy.Basic != nil {
+		desiredCount = policy.Basic.DesiredCount
+	} else if policy.Gang != nil {
+		desiredCount = policy.Gang.DesiredCount
+	}
+
+	if pl.enablePodGroupDesiredCount && desiredCount != nil && len(allPods) < int(*desiredCount) {
+		return fwk.NewStatus(fwk.UnschedulableAndUnresolvable, fmt.Sprintf("introducing delay while all pods count: %d doesn't satisfy desired count requirement: %d", len(allPods), *desiredCount))
+	}
+
+	return nil
 }

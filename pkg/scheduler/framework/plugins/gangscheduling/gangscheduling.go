@@ -69,11 +69,11 @@ func (pl *GangScheduling) Name() string {
 func (pl *GangScheduling) EventsToRegister(_ context.Context) ([]fwk.ClusterEventWithHint, error) {
 	return []fwk.ClusterEventWithHint{
 		// A new pod being added might be the one that completes a gang, meeting its MinCount requirement.
-		// Workload reference is immutable, so there is no need to subscribe on Pod/Update event.
-		{Event: fwk.ClusterEvent{Resource: fwk.Pod, ActionType: fwk.Add}, QueueingHintFn: pl.isSchedulableAfterPodAdded},
-		// A Workload being added can be making a waiting gang schedulable.
-		// Workload's PodGroups are immutable, so there's no need to handle Workload/Update event.
-		{Event: fwk.ClusterEvent{Resource: fwk.Workload, ActionType: fwk.Add}, QueueingHintFn: pl.isSchedulableAfterWorkloadAdded},
+		// PodSchedulingGroup field is immutable, so there is no need to subscribe on Pod/Update event.
+		{Event: fwk.ClusterEvent{Resource: fwk.Pod, ActionType: fwk.Add}, QueueingHintFn: helper.IsSchedulableAfterPodAdded},
+		// A PodGroup being added can be making a waiting gang schedulable.
+		// PodGroups are immutable, so there's no need to handle PodGroup/Update event.
+		{Event: fwk.ClusterEvent{Resource: fwk.PodGroup, ActionType: fwk.Add}, QueueingHintFn: helper.IsSchedulableAfterWorkloadAdded},
 	}, nil
 }
 
@@ -145,6 +145,10 @@ func (pl *GangScheduling) PreEnqueue(ctx context.Context, pod *v1.Pod) *fwk.Stat
 		return fwk.AsStatus(err)
 	}
 	allPods := podGroupState.AllPods()
+	if len(allPods) < int(policy.Gang.MinCount) {
+		return fwk.NewStatus(fwk.UnschedulableAndUnresolvable, "waiting for minCount pods from a gang to appear in scheduling queue")
+	}
+
 	if len(allPods) < int(policy.Gang.MinCount) {
 		return fwk.NewStatus(fwk.UnschedulableAndUnresolvable, "waiting for minCount pods from a gang to appear in scheduling queue")
 	}
