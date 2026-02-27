@@ -78,5 +78,6 @@ func NewSchedulerFeaturesFromGates(featureGate featuregate.FeatureGate) Features
 		EnableGangScheduling:                          featureGate.Enabled(features.GangScheduling),
 		EnableTaintTolerationComparisonOperators:      featureGate.Enabled(features.TaintTolerationComparisonOperators),
 		EnableInPlacePodLevelResourcesVerticalScaling: featureGate.Enabled(features.InPlacePodLevelResourcesVerticalScaling),
+		EnablePodGroupDesiredCount:                    featureGate.Enabled(features.PodGroupDesiredCount),
 	}
 }

@@ -23,7 +23,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
-	schedulinglisters "k8s.io/client-go/listers/scheduling/v1alpha1"
+	schedulinglisters "k8s.io/client-go/listers/scheduling/v1alpha2"
 	"k8s.io/klog/v2"
 	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/feature"
@@ -40,7 +40,7 @@ const (
 // belonging to a Workload with a Basic scheduling policy.
 type Coscheduling struct {
 	handle                     fwk.Handle
-	workloadLister             schedulinglisters.WorkloadLister
+	podGroupLister schedulinglisters.PodGroupLister
 	enablePodGroupDesiredCount bool
 }
 
@@ -50,7 +50,7 @@ var _ fwk.PreEnqueuePlugin = &Coscheduling{}
 func New(_ context.Context, _ runtime.Object, fh fwk.Handle, fts feature.Features) (fwk.Plugin, error) {
 	return &Coscheduling{
 		handle:                     fh,
-		workloadLister:             fh.SharedInformerFactory().Scheduling().V1alpha1().Workloads().Lister(),
+		podGroupLister: fh.SharedInformerFactory().Scheduling().V1alpha2().PodGroups().Lister(),
 		enablePodGroupDesiredCount: fts.EnablePodGroupDesiredCount,
 	}, nil
 }
@@ -61,44 +61,40 @@ func (pl *Coscheduling) Name() string {
 
 func (pl *Coscheduling) EventsToRegister(_ context.Context) ([]fwk.ClusterEventWithHint, error) {
 	return []fwk.ClusterEventWithHint{
-		// A new pod being added might be the one that help meeting its DesiredCount requirement.
-		// Workload reference is immutable, so there is no need to subscribe on Pod/Update event.
+		// A new pod being added might be the one that completes a gang, meeting its MinCount requirement.
+		// PodSchedulingGroup field is immutable, so there is no need to subscribe on Pod/Update event.
 		{Event: fwk.ClusterEvent{Resource: fwk.Pod, ActionType: fwk.Add}, QueueingHintFn: helper.IsSchedulableAfterPodAdded},
-		// A Workload being added can be making a waiting gang schedulable.
-		// Workload's PodGroups are immutable, so there's no need to handle Workload/Update event.
-		{Event: fwk.ClusterEvent{Resource: fwk.Workload, ActionType: fwk.Add}, QueueingHintFn: helper.IsSchedulableAfterWorkloadAdded},
+		// A PodGroup being added can be making a waiting gang schedulable.
+		// PodGroups are immutable, so there's no need to handle PodGroup/Update event.
+		{Event: fwk.ClusterEvent{Resource: fwk.PodGroup, ActionType: fwk.Add}, QueueingHintFn: helper.IsSchedulableAfterPodGroupAdded},
 	}, nil
 }
 
 func (pl *Coscheduling) PreEnqueue(ctx context.Context, pod *v1.Pod) *fwk.Status {
-	if pod.Spec.WorkloadRef == nil {
+	if pod.Spec.SchedulingGroup == nil {
 		return nil
 	}
 
 	namespace := pod.Namespace
-	workloadRef := pod.Spec.WorkloadRef
+	schedulingGroup := pod.Spec.SchedulingGroup
 
-	workload, err := pl.workloadLister.Workloads(namespace).Get(workloadRef.Name)
+	podGroup, err := pl.podGroupLister.PodGroups(namespace).Get(*schedulingGroup.PodGroupName)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			// The pod is unschedulable until its Workload object is created.
-			return fwk.NewStatus(fwk.UnschedulableAndUnresolvable, fmt.Sprintf("waiting for pods's workload %q to appear in scheduling queue", workloadRef.Name))
+			// The pod is unschedulable until its PodGroup object is created.
+			return fwk.NewStatus(fwk.UnschedulableAndUnresolvable, fmt.Sprintf("waiting for pods's pod group %q to appear in scheduling queue", *schedulingGroup.PodGroupName))
 		}
-		klog.FromContext(ctx).Error(err, "Failed to get workload", "pod", klog.KObj(pod), "workloadRef", pod.Spec.WorkloadRef)
-		return fwk.AsStatus(fmt.Errorf("failed to get workload %s/%s", namespace, workloadRef.Name))
+		klog.FromContext(ctx).Error(err, "Failed to get pod group", "pod", klog.KObj(pod), "schedulingGroup", schedulingGroup)
+		return fwk.AsStatus(fmt.Errorf("failed to get pod group %s/%s", namespace, *schedulingGroup.PodGroupName))
 	}
 
-	policy, ok := helper.PodGroupPolicy(workload, workloadRef.PodGroup)
-	if !ok {
-		return fwk.NewStatus(fwk.UnschedulableAndUnresolvable, fmt.Sprintf("pod group %q doesn't exist for a workload %q", workloadRef.PodGroup, workload.Name))
-	}
+	policy := podGroup.Spec.SchedulingPolicy
 
-	podGroupState, err := pl.handle.WorkloadManager().PodGroupState(namespace, workloadRef)
+	podGroupState, err := pl.handle.PodGroupManager().PodGroupState(namespace, schedulingGroup)
 	if err != nil {
 		return fwk.AsStatus(err)
 	}
 	allPods := podGroupState.AllPods()
-
 	var desiredCount *int32
 	if policy.Basic != nil {
 		desiredCount = policy.Basic.DesiredCount

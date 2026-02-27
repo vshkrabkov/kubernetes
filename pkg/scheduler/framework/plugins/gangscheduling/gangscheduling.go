@@ -73,29 +73,12 @@ func (pl *GangScheduling) EventsToRegister(_ context.Context) ([]fwk.ClusterEven
 		{Event: fwk.ClusterEvent{Resource: fwk.Pod, ActionType: fwk.Add}, QueueingHintFn: helper.IsSchedulableAfterPodAdded},
 		// A PodGroup being added can be making a waiting gang schedulable.
 		// PodGroups are immutable, so there's no need to handle PodGroup/Update event.
-		{Event: fwk.ClusterEvent{Resource: fwk.PodGroup, ActionType: fwk.Add}, QueueingHintFn: helper.IsSchedulableAfterWorkloadAdded},
+		{Event: fwk.ClusterEvent{Resource: fwk.PodGroup, ActionType: fwk.Add}, QueueingHintFn: helper.IsSchedulableAfterPodGroupAdded},
 	}, nil
 }
 
-func (pl *GangScheduling) isSchedulableAfterPodAdded(logger klog.Logger, pod *v1.Pod, oldObj, newObj interface{}) (fwk.QueueingHint, error) {
-	_, addedPod, err := util.As[*v1.Pod](oldObj, newObj)
-	if err != nil {
-		return fwk.Queue, err
-	}
-
-	if !helper.MatchingWorkloadReference(pod, addedPod) {
-		logger.V(5).Info("another pod was added but it doesn't match the target pod's workload",
-			"pod", klog.KObj(pod), "workloadRef", pod.Spec.WorkloadRef, "addedPod", klog.KObj(addedPod), "addedWorkloadRef", pod.Spec.WorkloadRef)
-		return fwk.QueueSkip, nil
-	}
-
-	logger.V(5).Info("another pod was added and it matches the target pod's workload, which may make the pod schedulable",
-		"pod", klog.KObj(pod), "workloadRef", pod.Spec.WorkloadRef, "addedPod", klog.KObj(addedPod), "addedWorkloadRef", pod.Spec.WorkloadRef)
-	return fwk.Queue, nil
-}
-
-func (pl *GangScheduling) isSchedulableAfterWorkloadAdded(logger klog.Logger, pod *v1.Pod, oldObj, newObj interface{}) (fwk.QueueingHint, error) {
-	_, addedWorkload, err := util.As[*schedulingapi.Workload](oldObj, newObj)
+func (pl *GangScheduling) isSchedulableAfterPodGroupAdded(logger klog.Logger, pod *v1.Pod, oldObj, newObj interface{}) (fwk.QueueingHint, error) {
+	_, addedPodGroup, err := util.As[*schedulingapi.PodGroup](oldObj, newObj)
 	if err != nil {
 		return fwk.Queue, err
 	}
@@ -145,10 +128,6 @@ func (pl *GangScheduling) PreEnqueue(ctx context.Context, pod *v1.Pod) *fwk.Stat
 		return fwk.AsStatus(err)
 	}
 	allPods := podGroupState.AllPods()
-	if len(allPods) < int(policy.Gang.MinCount) {
-		return fwk.NewStatus(fwk.UnschedulableAndUnresolvable, "waiting for minCount pods from a gang to appear in scheduling queue")
-	}
-
 	if len(allPods) < int(policy.Gang.MinCount) {
 		return fwk.NewStatus(fwk.UnschedulableAndUnresolvable, "waiting for minCount pods from a gang to appear in scheduling queue")
 	}
