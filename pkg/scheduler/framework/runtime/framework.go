@@ -449,19 +449,17 @@ func NewFramework(ctx context.Context, r Registry, profile *config.KubeScheduler
 		}
 	}
 
-	if utilfeature.DefaultFeatureGate.Enabled(features.TopologyAwareWorkloadScheduling) {
-		placementScoreWeights, err := getValidScoreWeights(f, reflect.TypeFor[fwk.PlacementScorePlugin](), append(profile.Plugins.PlacementScore.Enabled, profile.Plugins.MultiPoint.Enabled...))
-		if err != nil {
-			return nil, fmt.Errorf("placement score plugins: %w", err)
-		}
-		f.placementScorePluginWeight = placementScoreWeights
+	placementScoreWeights, err := getValidScoreWeights(f, reflect.TypeFor[fwk.PlacementScorePlugin](), append(profile.Plugins.PlacementScore.Enabled, profile.Plugins.MultiPoint.Enabled...))
+	if err != nil {
+		return nil, fmt.Errorf("placement score plugins: %w", err)
+	}
+	f.placementScorePluginWeight = placementScoreWeights
 
-		// Verifying the placement score weights again since Plugin.Name() could return a different
-		// value from the one used in the configuration.
-		for _, placementScorePlugin := range f.placementScorePlugins {
-			if f.placementScorePluginWeight[placementScorePlugin.Name()] == 0 {
-				return nil, fmt.Errorf("placement score plugin %q is not configured with weight", placementScorePlugin.Name())
-			}
+	// Verifying the placement score weights again since Plugin.Name() could return a different
+	// value from the one used in the configuration.
+	for _, placementScorePlugin := range f.placementScorePlugins {
+		if f.placementScorePluginWeight[placementScorePlugin.Name()] == 0 {
+			return nil, fmt.Errorf("placement score plugin %q is not configured with weight", placementScorePlugin.Name())
 		}
 	}
 
