@@ -59,43 +59,13 @@ type IsEligiblePreemptorFunc func(domain preemption.Domain, victim preemption.Vi
 // as affinity between pods that are eligible to preempt each other isn't recommended.
 type MoreImportantVictimFunc func(victim1, victim2 preemption.Victim) bool
 
-// podSchedulingSimulator is used to verify if the preemptor's pods can be successfully
-// scheduled onto the target domain (a single Node or a set of Nodes) given the current
-// resource availability. This acts as the feasibility predicate during the preemption
-// simulation, confirming whether a specific set of evictions actually creates enough space
-// for the incoming workload.
-type podSchedulingSimulator interface {
-	// simulate checks if the preemptor's pods can be successfully scheduled onto the target domain.
-	simulate(ctx context.Context, preemptor preemption.Preemptor, domain preemption.Domain) *fwk.Status
-}
-
-type defaultPodSchedulingSimulator struct {
-	fh fwk.Handle
-}
-
-var _ podSchedulingSimulator = &defaultPodSchedulingSimulator{}
-
-func (s *defaultPodSchedulingSimulator) simulate(ctx context.Context, preemptor preemption.Preemptor, domain preemption.Domain) *fwk.Status {
-	nodes := domain.Nodes()
-	pods := preemptor.Members()
-	states := preemptor.CycleStates()
-
-	if len(pods) == 1 && len(nodes) == 1 {
-		return s.fh.RunFilterPluginsWithNominatedPods(ctx, states[0], pods[0], nodes[0])
-	}
-
-	// TODO: Update while wiring pod group scheduling with preemption logic.
-	return fwk.AsStatus(fmt.Errorf("pod group scheduling is not wired with preemption logic yet"))
-}
-
 // DefaultPreemption is a PostFilter plugin implements the preemption logic.
 type DefaultPreemption struct {
-	fh                     fwk.Handle
-	fts                    feature.Features
-	args                   config.DefaultPreemptionArgs
-	// podSchedulingSimulator is extracted into a separate interface for testability.
-	podSchedulingSimulator podSchedulingSimulator
-	Evaluator              *preemption.Evaluator
+	fh   fwk.Handle
+	fts  feature.Features
+	args config.DefaultPreemptionArgs
+
+	Evaluator *preemption.Evaluator
 
 	IsEligiblePreemptor IsEligiblePreemptorFunc
 
@@ -139,8 +109,6 @@ func New(_ context.Context, dpArgs runtime.Object, fh fwk.Handle, fts feature.Fe
 	// 3. For single Pods: Older StartTime (longer runtime).
 	// 4. For PodGroups: Larger Group Size, then Older StartTime.
 	pl.MoreImportantVictim = pl.moreImportantVictim
-
-	pl.podSchedulingSimulator = &defaultPodSchedulingSimulator{fh: fh}
 
 	return &pl, nil
 }
@@ -307,22 +275,13 @@ func (pl *DefaultPreemption) SelectVictimsOnDomain(
 
 	// As the first step, remove all victims eligible for preemption from the domain.
 	for _, victim := range potentialVictims {
-		// If a Victim is a PodGroup spanning multiple nodes, some affected nodes
-		// might be outside of Domain. We add them to nameToNode map to ensure
-		// they are considered during preemption.
-		for name, nodeInfo := range victim.AffectedNodes() {
-			if _, ok := nameToNode[name]; !ok {
-				nameToNode[name] = nodeInfo
-			}
-		}
-
 		if err := removePods(victim); err != nil {
 			return nil, 0, fwk.AsStatus(err)
 		}
 	}
 
 	// If the preemptor doesn't fit after removing all victims, the domain is unsuitable.
-	if status := pl.podSchedulingSimulator.simulate(ctx, preemptor, domain); !status.IsSuccess() {
+	if status := pl.simulatePodScheduling(ctx, preemptor, domain); !status.IsSuccess() {
 		return nil, 0, status
 	}
 
@@ -343,7 +302,7 @@ func (pl *DefaultPreemption) SelectVictimsOnDomain(
 			return false, err
 		}
 
-		status := pl.podSchedulingSimulator.simulate(ctx, preemptor, domain)
+		status := pl.simulatePodScheduling(ctx, preemptor, domain)
 		fits := status.IsSuccess()
 		if !fits {
 			if err := removePods(v); err != nil {
@@ -557,4 +516,23 @@ func (pl *DefaultPreemption) moreImportantVictim(vi1, vi2 preemption.Victim) boo
 	t1 := vi1.EarliestStartTime()
 	t2 := vi2.EarliestStartTime()
 	return t1.Before(t2)
+}
+
+// simulatePodScheduling is used to verify if the preemptor's pods (for now it is a single pod) can be successfully
+// scheduled onto the target domain (for now it is a single node) given the current
+// resource availability. This acts as the feasibility predicate during the preemption
+// simulation, confirming whether a specific set of evictions actually creates enough space
+// for the incoming workload.
+func (pl *DefaultPreemption) simulatePodScheduling(ctx context.Context, preemptor preemption.Preemptor, domain preemption.Domain) *fwk.Status {
+	nodes := domain.Nodes()
+	pods := preemptor.Members()
+	states := preemptor.CycleStates()
+
+	if len(pods) == 1 && len(nodes) == 1 {
+		return pl.fh.RunFilterPluginsWithNominatedPods(ctx, states[0], pods[0], nodes[0])
+	}
+
+	// TODO: For 1.36 release we trying to reduce the scope of preemption plugin to only single pod.
+	// We will support pod group preemption in the future.
+	return fwk.AsStatus(fmt.Errorf("pod group scheduling is not wired with preemption logic yet"))
 }
