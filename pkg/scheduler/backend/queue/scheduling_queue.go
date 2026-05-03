@@ -666,11 +666,22 @@ func (p *PriorityQueue) AddNominatedPod(logger klog.Logger, pi fwk.PodInfo, nomi
 }
 
 // moveToActiveQ tries to add the pod to the active queue.
-// If the pod doesn't pass PreEnqueue plugins, it gets added to unschedulablePods instead.
-// movesFromBackoffQ should be set to true, if the pod directly moves from the backoffQ, so the PreEnqueue call can be skipped.
-// It returns a boolean flag to indicate whether the pod is added successfully.
-// Pod should be removed from the backoffQ before calling moveToActiveQ
+// If the pod doesn't pass PreEnqueue plugins, it gets added to unschedulablePods instead (and may be removed from
+// unschedulablePods inside this function when the pod is not gated).
+// movesFromBackoffQ should be set to true if the pod moved directly from backoffQ so PreEnqueue can be skipped when
+// SchedulerPopFromBackoffQ is enabled.
+// It returns whether the pod was added to activeQ.
+//
+// The pod must not remain in backoffQ when this runs: Pop removes backoff entries without holding p.lock,
+// flushBackoffQCompleted pops completed backoff before calling here, and activate deletes from backoff before calling here.
+// A defensive check removes any stray backoff membership and logs if the invariant breaks.
 func (p *PriorityQueue) moveToActiveQ(logger klog.Logger, pInfo *framework.QueuedPodInfo, event string, movesFromBackoffQ bool) bool {
+	if p.backoffQ.has(pInfo) {
+		utilruntime.HandleErrorWithLogger(logger, nil, "Invariant violated: pod still present in backoff queue while moving to active queue; removing backoff entry",
+			"pod", klog.KObj(pInfo.Pod))
+		_ = p.backoffQ.delete(pInfo)
+	}
+
 	gatedBefore := pInfo.Gated()
 	// If SchedulerPopFromBackoffQ feature gate is enabled,
 	// PreEnqueue plugins were called when the pod was added to the backoffQ.
@@ -781,8 +792,8 @@ func (p *PriorityQueue) activate(logger klog.Logger, pod *v1.Pod) bool {
 		if !exists {
 			return false
 		}
-		// Delete pod from the backoffQ now to make sure it won't be popped from the backoffQ
-		// just before moving it to the activeQ
+		// Pop does not hold p.lock and may dequeue from backoffQ concurrently while Activate holds p.lock.
+		// Delete from backoffQ before moveToActiveQ so if Pop already claimed the pod, delete fails and we bail instead of double-moving.
 		if deleted := p.backoffQ.delete(pInfo); !deleted {
 			// Pod was popped from the backoffQ in the meantime. Don't activate it.
 			return false

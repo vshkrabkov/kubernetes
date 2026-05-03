@@ -1691,6 +1691,7 @@ func TestPriorityQueue_moveToActiveQ(t *testing.T) {
 		event                  string
 		movesFromBackoffQ      bool
 		popFromBackoffQEnabled []bool
+		seedBackoffDuplicate   bool
 		wantUnschedulablePods  int
 		wantSuccess            bool
 	}{
@@ -1784,6 +1785,15 @@ func TestPriorityQueue_moveToActiveQ(t *testing.T) {
 			wantUnschedulablePods: 0,
 			wantSuccess:           true,
 		},
+		{
+			name: "pod still listed in backoff (invalid caller state) is cleared then moved to activeQ",
+			pod:  st.MakePod().Name("p").Label("p", "").Obj(),
+			// Simulate forgetting to remove backoff before moveToActiveQ; defensive path deletes backoff then proceeds.
+			seedBackoffDuplicate:  true,
+			event:                 framework.EventUnscheduledPodAdd.Label(),
+			wantUnschedulablePods: 0,
+			wantSuccess:           true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1803,12 +1813,18 @@ func TestPriorityQueue_moveToActiveQ(t *testing.T) {
 				}
 				q := NewTestQueueWithObjects(ctx, newDefaultQueueSort(), []runtime.Object{tt.pod}, WithPreEnqueuePluginMap(m),
 					WithPodInitialBackoffDuration(time.Second*30), WithPodMaxBackoffDuration(time.Second*60))
+				if tt.seedBackoffDuplicate {
+					q.backoffQ.add(logger, q.newQueuedPodInfo(ctx, tt.pod), framework.EventUnscheduledPodAdd.Label())
+				}
 				got := q.moveToActiveQ(logger, q.newQueuedPodInfo(ctx, tt.pod), tt.event, tt.movesFromBackoffQ)
 				if got != tt.wantSuccess {
 					t.Errorf("Unexpected result: want %v, but got %v", tt.wantSuccess, got)
 				}
 				if tt.wantUnschedulablePods != len(q.unschedulablePods.podInfoMap) {
 					t.Errorf("Unexpected unschedulablePods: want %v, but got %v", tt.wantUnschedulablePods, len(q.unschedulablePods.podInfoMap))
+				}
+				if tt.seedBackoffDuplicate && q.backoffQ.has(q.newQueuedPodInfo(ctx, tt.pod)) {
+					t.Errorf("pod should not remain in backoffQ after moveToActiveQ")
 				}
 
 				// Simulate an update event.
