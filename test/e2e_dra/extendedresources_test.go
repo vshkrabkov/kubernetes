@@ -43,6 +43,12 @@ func extendedResourcesDriverResources(nodes *drautils.Nodes) map[string]resource
 	return drautils.DriverResourcesNow(nodes, 8)
 }
 
+func extendedResourceGateCycle(_ ktesting.TContext, _ *drautils.Builder) gateOffFunc {
+	return func(_ ktesting.TContext) gateOnAgainFunc {
+		return func(_ ktesting.TContext) {}
+	}
+}
+
 // extendedResourceUpgradeDowngrade tests the DRAExtendedResources feature during upgrade/downgrade scenarios
 // for a specific resource type (explicit or implicit).
 // This test verifies:

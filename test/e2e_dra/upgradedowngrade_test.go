@@ -86,6 +86,10 @@ func waitForSlices(tCtx ktesting.TContext, name string, b *drautils.Builder, dri
 
 var repoRoot = repoRootDefault()
 
+const (
+	localUpClusterRuntimeConfig = "resource.k8s.io/v1beta1,resource.k8s.io/v1beta2,resource.k8s.io/v1alpha3"
+)
+
 func currentBinDir() (envName, content string) {
 	envName = "KUBERNETES_SERVER_BIN_DIR"
 	content, _ = os.LookupEnv(envName)
@@ -214,7 +218,7 @@ func testUpgradeDowngrade(tCtx ktesting.TContext) {
 	})
 	tCtx.Step(fmt.Sprintf("bring up v%d.%d", major, previousMinor), func(tCtx ktesting.TContext) {
 		localUpClusterEnv := map[string]string{
-			"RUNTIME_CONFIG": "resource.k8s.io/v1beta1,resource.k8s.io/v1beta2,resource.k8s.io/v1alpha3",
+			"RUNTIME_CONFIG": localUpClusterRuntimeConfig,
 			"FEATURE_GATES":  "DynamicResourceAllocation=true,DRADeviceTaintRules=true,DRADeviceTaints=true,DRAExtendedResource=true,DRAPartitionableDevices=true",
 			// *not* needed because driver will run in "local filesystem" mode (= driver.IsLocal): "ALLOW_PRIVILEGED": "1",
 		}
