@@ -59,8 +59,10 @@ func TestCheckpointStateRestore(t *testing.T) {
 		{
 			"Restore default cpu set",
 			`{
-				"data": "{\"policyName\":\"none\",\"defaultCPUSet\":\"4-6\"}",
-				"checksum": 657950972
+				"policyName": "none",
+				"defaultCPUSet": "4-6",
+				"entries": {},
+				"checksum": 354655845
 			}`,
 			"none",
 			containermap.ContainerMap{},
@@ -73,10 +75,17 @@ func TestCheckpointStateRestore(t *testing.T) {
 		{
 			"Restore valid checkpoint",
 			`{
-				"data": "{\"policyName\":\"static\",\"defaultCPUSet\":\"7-9\",\"entries\":{\"pod\":{\"container1\":\"4-6\",\"container2\":\"1-3\"}}}",
-				"checksum": 1420829534
+				"policyName": "none",
+				"defaultCPUSet": "1-3",
+				"entries": {
+					"pod": {
+						"container1": "4-6",
+						"container2": "1-3"
+					}
+				},
+				"checksum": 3610638499
 			}`,
-			"static",
+			"none",
 			containermap.ContainerMap{},
 			"",
 			&stateMemory{
@@ -86,15 +95,17 @@ func TestCheckpointStateRestore(t *testing.T) {
 						"container2": cpuset.New(1, 2, 3),
 					},
 				},
-				defaultCPUSet: cpuset.New(7, 8, 9),
+				defaultCPUSet: cpuset.New(1, 2, 3),
 			},
 			false,
 		},
 		{
 			"Restore checkpoint with invalid checksum",
 			`{
-				"data": "{\"policyName\":\"none\",\"defaultCPUSet\":\"4-6\"}",
-				"checksum": 1234
+				"policyName": "none",
+				"defaultCPUSet": "4-6",
+				"entries": {},
+				"checksum": 1337
 			}`,
 			"none",
 			containermap.ContainerMap{},
@@ -114,8 +125,10 @@ func TestCheckpointStateRestore(t *testing.T) {
 		{
 			"Restore checkpoint with invalid policy name",
 			`{
-				"data": "{\"policyName\":\"other\",\"defaultCPUSet\":\"1-3\"}",
-				"checksum": 2380595610
+				"policyName": "other",
+				"defaultCPUSet": "1-3",
+				"entries": {},
+				"checksum": 1394507217
 			}`,
 			"none",
 			containermap.ContainerMap{},
@@ -126,8 +139,10 @@ func TestCheckpointStateRestore(t *testing.T) {
 		{
 			"Restore checkpoint with unparsable default cpu set",
 			`{
-				"data": "{\"policyName\":\"none\",\"defaultCPUSet\":\"1.3\"}",
-				"checksum": 3033143655
+				"policyName": "none",
+				"defaultCPUSet": "1.3",
+				"entries": {},
+				"checksum": 3021697696
 			}`,
 			"none",
 			containermap.ContainerMap{},
@@ -138,10 +153,17 @@ func TestCheckpointStateRestore(t *testing.T) {
 		{
 			"Restore checkpoint with unparsable assignment entry",
 			`{
-				"data": "{\"policyName\":\"static\",\"defaultCPUSet\":\"1-3\",\"entries\":{\"pod\":{\"container1\":\"4-6\",\"container2\":\"asd\"}}}",
-				"checksum": 3794806925
+				"policyName": "none",
+				"defaultCPUSet": "1-3",
+				"entries": {
+					"pod": {
+						"container1": "4-6",
+						"container2": "asd"
+					}
+				},
+				"checksum": 962272150
 			}`,
-			"static",
+			"none",
 			containermap.ContainerMap{},
 			`could not parse cpuset "asd" for container "container2" in pod "pod": strconv.Atoi: parsing "asd": invalid syntax`,
 			&stateMemory{},
@@ -165,15 +187,15 @@ func TestCheckpointStateRestore(t *testing.T) {
 		{
 			"Restore checkpoint with migration",
 			`{
-				"policyName": "static",
-				"defaultCPUSet": "7-9",
+				"policyName": "none",
+				"defaultCPUSet": "1-3",
 				"entries": {
 					"containerID1": "4-6",
 					"containerID2": "1-3"
 				},
-				"checksum": 2026311253
+				"checksum": 3680390589
 			}`,
-			"static",
+			"none",
 			func() containermap.ContainerMap {
 				cm := containermap.NewContainerMap()
 				cm.Add("pod", "container1", "containerID1")
@@ -188,7 +210,7 @@ func TestCheckpointStateRestore(t *testing.T) {
 						"container2": cpuset.New(1, 2, 3),
 					},
 				},
-				defaultCPUSet: cpuset.New(7, 8, 9),
+				defaultCPUSet: cpuset.New(1, 2, 3),
 			},
 			false,
 		},
@@ -225,17 +247,17 @@ func TestCheckpointStateRestore(t *testing.T) {
 		{
 			"Restore checkpoint from v2 (migration) with PodLevelResourceManagers enabled",
 			`{
-				"policyName": "static",
-				"defaultCPUSet": "7-9",
+				"policyName": "none",
+				"defaultCPUSet": "1-3",
 				"entries": {
 					"pod": {
 						"container1": "4-6",
 						"container2": "1-3"
 					}
 				},
-				"checksum": 1942532442
+				"checksum": 3610638499
 			}`,
-			"static",
+			"none",
 			containermap.ContainerMap{},
 			"",
 			&stateMemory{
@@ -245,44 +267,7 @@ func TestCheckpointStateRestore(t *testing.T) {
 						"container2": cpuset.New(1, 2, 3),
 					},
 				},
-				defaultCPUSet: cpuset.New(7, 8, 9),
-			},
-			true,
-		},
-		{
-			"Restore checkpoint from v3 (migration) with PodLevelResourceManagers enabled",
-			`{
-				"policyName": "static",
-				"defaultCPUSet": "1-2",
-				"entries": {
-					"pod1": {
-						"container1": "5-6",
-						"container2": "3-4"
-					}
-				},
-				"podEntries": {
-					"pod2": {
-						"cpuSet":"7-9"
-					}
-				},
-				"checksum": 2284712151
-			}`,
-			"static",
-			containermap.ContainerMap{},
-			"",
-			&stateMemory{
-				assignments: ContainerCPUAssignments{
-					"pod1": map[string]cpuset.CPUSet{
-						"container1": cpuset.New(5, 6),
-						"container2": cpuset.New(3, 4),
-					},
-				},
-				defaultCPUSet: cpuset.New(1, 2),
-				podAssignments: PodCPUAssignments{
-					"pod2": PodEntry{
-						CPUSet: cpuset.New(7, 8, 9),
-					},
-				},
+				defaultCPUSet: cpuset.New(1, 2, 3),
 			},
 			true,
 		},
@@ -290,100 +275,97 @@ func TestCheckpointStateRestore(t *testing.T) {
 			"Restore checkpoint from v2 (migration) with PodLevelResourceManagers disabled",
 			`{
 				"policyName": "none",
-				"defaultCPUSet": "1-2",
+				"defaultCPUSet": "1-3",
 				"entries": {
 					"pod": {
-						"container1": "5-6",
-						"container2": "3-4"
+						"container1": "4-6",
+						"container2": "1-3"
 					}
 				},
 				"checksum": 3610638499
 			}`,
-			"static",
+			"none",
 			containermap.ContainerMap{},
 			"",
 			&stateMemory{
 				assignments: ContainerCPUAssignments{
 					"pod": map[string]cpuset.CPUSet{
-						"container1": cpuset.New(5, 6),
-						"container2": cpuset.New(3, 4),
+						"container1": cpuset.New(4, 5, 6),
+						"container2": cpuset.New(1, 2, 3),
 					},
 				},
-				defaultCPUSet: cpuset.New(1, 2),
+				defaultCPUSet: cpuset.New(1, 2, 3),
 			},
 			false,
 		},
 		{
-			"Restore checkpoint from v3 (migration) with PodLevelResourceManagers disabled",
+			"Restore valid v3 checkpoint with PodLevelResourceManagers enabled",
 			`{
 				"policyName": "none",
 				"defaultCPUSet": "1-3",
 				"entries": {
-					"pod1": {
+					"pod": {
 						"container1": "4-6",
 						"container2": "1-3"
 					}
 				},
 				"podEntries": {
-					"pod2": {
-						"cpuSet":"7-9"
+					"pod": {
+						"cpuSet": "4-6"
 					}
 				},
-				"checksum": 751755688
+				"checksum": 2649431787
 			}`,
 			"none",
 			containermap.ContainerMap{},
 			"",
 			&stateMemory{
 				assignments: ContainerCPUAssignments{
-					"pod1": map[string]cpuset.CPUSet{
+					"pod": map[string]cpuset.CPUSet{
 						"container1": cpuset.New(4, 5, 6),
 						"container2": cpuset.New(1, 2, 3),
 					},
 				},
-				defaultCPUSet: cpuset.New(1, 2, 3),
-			},
-			false,
-		},
-		{
-			"Restore valid v4 checkpoint",
-			`{
-				"data": "{\"policyName\":\"static\",\"defaultCPUSet\":\"1-3\",\"entries\":{\"pod\":{\"container1\":\"4-6\",\"container2\":\"7-9\"}},\"podEntries\":{\"pod\":{\"cpuSet\":\"4-10\"}}}",
-				"checksum": 2328898362
-			}`,
-			"static",
-			containermap.ContainerMap{},
-			"",
-			&stateMemory{
-				assignments: ContainerCPUAssignments{
-					"pod": map[string]cpuset.CPUSet{
-						"container1": cpuset.New(4, 5, 6),
-						"container2": cpuset.New(7, 8, 9),
-					},
-				},
-				defaultCPUSet: cpuset.New(1, 2, 3),
 				podAssignments: PodCPUAssignments{
 					"pod": PodEntry{
-						CPUSet: cpuset.New(4, 5, 6, 7, 8, 9, 10),
+						CPUSet: cpuset.New(4, 5, 6),
 					},
 				},
+				defaultCPUSet: cpuset.New(1, 2, 3),
 			},
 			true,
 		},
 		{
-			"Restore valid v4 checkpoint with PodLevelResourceManagers disabled",
+			"Restore valid v3 checkpoint with PodLevelResourceManagers disabled",
 			`{
-				"data": "{\"policyName\":\"none\",\"defaultCPUSet\":\"1-3\",\"entries\":{\"pod\":{\"container1\":\"4-6\",\"container2\":\"1-3\"}},\"podEntries\":{\"pod\":{\"cpuSet\":\"4-6\"}}}",
-				"checksum": 3246418529
+				"policyName": "none",
+				"defaultCPUSet": "1-3",
+				"entries": {
+					"pod": {
+						"container1": "4-6",
+						"container2": "1-3"
+					}
+				},
+				"podEntries": {
+					"pod": {
+						"cpuSet": "4-6"
+					}
+				},
+				"checksum": 2649431787
 			}`,
 			"none",
 			containermap.ContainerMap{},
-			"",
+			"could not restore state from checkpoint",
 			&stateMemory{
 				assignments: ContainerCPUAssignments{
 					"pod": map[string]cpuset.CPUSet{
 						"container1": cpuset.New(4, 5, 6),
 						"container2": cpuset.New(1, 2, 3),
+					},
+				},
+				podAssignments: PodCPUAssignments{
+					"pod": PodEntry{
+						CPUSet: cpuset.New(4, 5, 6),
 					},
 				},
 				defaultCPUSet: cpuset.New(1, 2, 3),
@@ -402,50 +384,17 @@ func TestCheckpointStateRestore(t *testing.T) {
 		{
 			"Restore corrupt checkpoint with PodLevelResourceManagers enabled",
 			`{
-				"data": "{\"policyName\":\"none\",\"defaultCPUSet\":\"4-6\"}",
-				"checksum": 1234
+				"policyName": "none",
+				"defaultCPUSet": "1-3",
+				"entries": {},
+				"podEntries": {},
+				"checksum": 12345
 			}`,
 			"none",
 			containermap.ContainerMap{},
 			"checkpoint is corrupted",
 			&stateMemory{},
 			true,
-		},
-		{
-			"Restore checkpoint without data section",
-			`{
-				"checksum": 1234
-			}`,
-			"none",
-			containermap.ContainerMap{},
-			"checkpoint is corrupted",
-			&stateMemory{},
-			false,
-		},
-		{
-			"Restore checkpoint without checksum section falls back to empty v2 version",
-			`{
-				"data": "{\"policyName\":\"none\",\"defaultCPUSet\":\"4-6\"}"
-			}`,
-			"none",
-			containermap.ContainerMap{},
-			`configured policy "none" differs from state checkpoint policy ""`,
-			&stateMemory{},
-			false,
-		},
-		{
-			"Restore checkpoint ignoring unknown fields in data section",
-			`{
-				"data": "{\"policyName\":\"none\",\"defaultCPUSet\":\"4-6\",\"unknownField\":\"value\"}",
-				"checksum": 3492408555
-			}`,
-			"none",
-			containermap.ContainerMap{},
-			"",
-			&stateMemory{
-				defaultCPUSet: cpuset.New(4, 5, 6),
-			},
-			false,
 		},
 	}
 
@@ -688,12 +637,6 @@ func AssertStateEqual(t *testing.T, sf State, sm State) {
 	cpuassignmentSm := sm.GetCPUAssignments()
 	if !reflect.DeepEqual(cpuassignmentSf, cpuassignmentSm) {
 		t.Errorf("State CPU assignments mismatch. Have %s, want %s", cpuassignmentSf, cpuassignmentSm)
-	}
-
-	podcpuassignmentSf := sf.GetPodCPUAssignments()
-	podcpuassignmentSm := sm.GetPodCPUAssignments()
-	if !reflect.DeepEqual(podcpuassignmentSf, podcpuassignmentSm) {
-		t.Errorf("State CPU assignments mismatch. Have %s, want %s", podcpuassignmentSf, podcpuassignmentSm)
 	}
 }
 
