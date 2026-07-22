@@ -1030,6 +1030,11 @@ func TestSnapshot_Mutations(t *testing.T) {
 	podWithAffinity := st.MakePod().Name("p-aff").Namespace("ns").UID("p-aff").PodAffinity("key", &metav1.LabelSelector{MatchLabels: map[string]string{"key": "value"}}, st.PodAffinityWithRequiredReq).Node("node-1").Obj()
 	podWithAntiAffinity := st.MakePod().Name("p-anti").Namespace("ns").UID("p-anti").PodAntiAffinity("key", &metav1.LabelSelector{MatchLabels: map[string]string{"key": "value"}}, st.PodAntiAffinityWithRequiredReq).Node("node-1").Obj()
 
+	// All mutations must go through the snapshot's mutation API (AddPod,
+	// RemovePod): the undo-log-based session reverts exactly the mutations it
+	// witnessed. Directly mutating NodeInfos or the snapshot's indexes during a
+	// session is not supported (and corrupts the snapshot with or without a
+	// session, since the snapshot-wide indexes are not maintained).
 	tests := []struct {
 		name           string
 		initialPods    []*v1.Pod
@@ -1037,29 +1042,32 @@ func TestSnapshot_Mutations(t *testing.T) {
 		modifySnapshot func(klog.Logger, *Snapshot)
 	}{
 		{
-			name: "Modify NodeInfo (Add Pod)",
+			name: "AddPod",
 			initialNodes: []*v1.Node{
 				{ObjectMeta: metav1.ObjectMeta{Name: "node-1"}},
 			},
 			modifySnapshot: func(_ klog.Logger, s *Snapshot) {
-				node := s.nodeInfoMap["node-1"]
-				pod := st.MakePod().Name("p1").Node("node-1").Obj()
-				node.AddPod(pod)
+				pod := st.MakePod().Name("p1").UID("p1").Node("node-1").Obj()
+				podInfo, _ := framework.NewPodInfo(pod)
+				if err := s.AddPod(podInfo, "node-1"); err != nil {
+					t.Fatalf("Failed to add pod: %v", err)
+				}
 			},
 		},
 		{
-			name: "Modify havePodsWithAffinityNodeInfoList (Add)",
+			name: "AddPod with affinity updates havePodsWithAffinityNodeInfoList",
 			initialNodes: []*v1.Node{
 				{ObjectMeta: metav1.ObjectMeta{Name: "node-1", Labels: map[string]string{"key": "value"}}},
 			},
 			modifySnapshot: func(_ klog.Logger, s *Snapshot) {
-				node := s.nodeInfoMap["node-1"]
-				node.AddPod(podWithAffinity)
-				s.havePodsWithAffinityNodeInfoList = append(s.havePodsWithAffinityNodeInfoList, node)
+				podInfo, _ := framework.NewPodInfo(podWithAffinity)
+				if err := s.AddPod(podInfo, "node-1"); err != nil {
+					t.Fatalf("Failed to add pod: %v", err)
+				}
 			},
 		},
 		{
-			name: "Modify havePodsWithRequiredAntiAffinityNodeInfoList (Remove)",
+			name: "RemovePod with anti-affinity updates havePodsWithRequiredAntiAffinityNodeInfoList",
 			initialPods: []*v1.Pod{
 				podWithAntiAffinity,
 			},
@@ -1067,47 +1075,71 @@ func TestSnapshot_Mutations(t *testing.T) {
 				{ObjectMeta: metav1.ObjectMeta{Name: "node-1", Labels: map[string]string{"key": "value"}}},
 			},
 			modifySnapshot: func(logger klog.Logger, s *Snapshot) {
-				node := s.nodeInfoMap["node-1"]
-				if err := node.RemovePod(logger, podWithAntiAffinity); err != nil {
+				if err := s.RemovePod(logger, podWithAntiAffinity, "node-1"); err != nil {
 					t.Fatalf("Failed to remove pod: %v", err)
 				}
-				s.havePodsWithRequiredAntiAffinityNodeInfoList = []fwk.NodeInfo{}
 			},
 		},
 		{
-			name: "Modify nodeInfoList directly",
+			name: "AddPod to a node not present in the snapshot",
 			initialNodes: []*v1.Node{
 				{ObjectMeta: metav1.ObjectMeta{Name: "node-1"}},
-				{ObjectMeta: metav1.ObjectMeta{Name: "node-2"}},
 			},
 			modifySnapshot: func(_ klog.Logger, s *Snapshot) {
-				// Reverse the list
-				s.nodeInfoList[0], s.nodeInfoList[1] = s.nodeInfoList[1], s.nodeInfoList[0]
+				pod := st.MakePod().Name("p1").UID("p1").Node("node-9").Obj()
+				podInfo, _ := framework.NewPodInfo(pod)
+				if err := s.AddPod(podInfo, "node-9"); err != nil {
+					t.Fatalf("Failed to add pod: %v", err)
+				}
 			},
 		},
 		{
-			name: "Modify usedPVCRefCounts (Add/Modify)",
+			name: "AddPod with PVC increments usedPVCRefCounts",
 			initialPods: []*v1.Pod{
-				st.MakePod().Name("p1").Namespace("ns").Node("node-1").PVC("pvc-1").Obj(),
+				st.MakePod().Name("p1").Namespace("ns").UID("p1").Node("node-1").PVC("pvc-1").Obj(),
 			},
 			initialNodes: []*v1.Node{
 				{ObjectMeta: metav1.ObjectMeta{Name: "node-1"}},
 			},
 			modifySnapshot: func(_ klog.Logger, s *Snapshot) {
-				s.usedPVCRefCounts["ns/pvc-1"]++
-				s.usedPVCRefCounts["ns/pvc-2"] = 1
+				pod := st.MakePod().Name("p2").Namespace("ns").UID("p2").Node("node-1").PVC("pvc-1").PVC("pvc-2").Obj()
+				podInfo, _ := framework.NewPodInfo(pod)
+				if err := s.AddPod(podInfo, "node-1"); err != nil {
+					t.Fatalf("Failed to add pod: %v", err)
+				}
 			},
 		},
 		{
-			name: "Modify usedPVCRefCounts (Remove)",
+			name: "RemovePod with PVC decrements usedPVCRefCounts",
 			initialPods: []*v1.Pod{
-				st.MakePod().Name("p1").Namespace("ns").Node("node-1").PVC("pvc-1").Obj(),
+				st.MakePod().Name("p1").Namespace("ns").UID("p1").Node("node-1").PVC("pvc-1").Obj(),
 			},
 			initialNodes: []*v1.Node{
 				{ObjectMeta: metav1.ObjectMeta{Name: "node-1"}},
 			},
-			modifySnapshot: func(_ klog.Logger, s *Snapshot) {
-				delete(s.usedPVCRefCounts, "ns/pvc-1")
+			modifySnapshot: func(logger klog.Logger, s *Snapshot) {
+				pod := st.MakePod().Name("p1").Namespace("ns").UID("p1").Node("node-1").PVC("pvc-1").Obj()
+				if err := s.RemovePod(logger, pod, "node-1"); err != nil {
+					t.Fatalf("Failed to remove pod: %v", err)
+				}
+			},
+		},
+		{
+			name: "RemovePod then AddPod of the same pod (reprieval round trip)",
+			initialPods: []*v1.Pod{
+				podWithAffinity,
+			},
+			initialNodes: []*v1.Node{
+				{ObjectMeta: metav1.ObjectMeta{Name: "node-1", Labels: map[string]string{"key": "value"}}},
+			},
+			modifySnapshot: func(logger klog.Logger, s *Snapshot) {
+				if err := s.RemovePod(logger, podWithAffinity, "node-1"); err != nil {
+					t.Fatalf("Failed to remove pod: %v", err)
+				}
+				podInfo, _ := framework.NewPodInfo(podWithAffinity)
+				if err := s.AddPod(podInfo, "node-1"); err != nil {
+					t.Fatalf("Failed to re-add pod: %v", err)
+				}
 			},
 		},
 	}
