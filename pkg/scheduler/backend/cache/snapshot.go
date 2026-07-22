@@ -77,39 +77,6 @@ func (l *undoLog) restoreTo(v uint64) {
 	}
 }
 
-// snapshotBackupData stores shallow copies of original snapshot data.
-type snapshotBackupData struct {
-	nodeInfoMap                                  map[string]*framework.NodeInfo
-	nodeInfoList                                 []fwk.NodeInfo
-	havePodsWithAffinityNodeInfoList             []fwk.NodeInfo
-	havePodsWithRequiredAntiAffinityNodeInfoList []fwk.NodeInfo
-	usedPVCRefCounts                             map[string]int
-	podGroupStates                               map[fwk.EntityKey]*podGroupStateSnapshot
-}
-
-// newSnapshotBackupData is creating a snapshotBackupData struct and it is filling it with original data from snapshot.
-// NOTE: This is a shallow copy. When using this method we must make sure that the data in the snapshot is deep copied after creating the backup.
-func newSnapshotBackupData(s *Snapshot) *snapshotBackupData {
-	return &snapshotBackupData{
-		nodeInfoMap:                      s.nodeInfoMap,
-		nodeInfoList:                     s.nodeInfoList,
-		havePodsWithAffinityNodeInfoList: s.havePodsWithAffinityNodeInfoList,
-		havePodsWithRequiredAntiAffinityNodeInfoList: s.havePodsWithRequiredAntiAffinityNodeInfoList,
-		usedPVCRefCounts: s.usedPVCRefCounts,
-		podGroupStates:   s.podGroupStates,
-	}
-}
-
-// restore is restoring snapshot data from backupData struct.
-func (b *snapshotBackupData) restore(s *Snapshot) {
-	s.nodeInfoMap = b.nodeInfoMap
-	s.nodeInfoList = b.nodeInfoList
-	s.havePodsWithAffinityNodeInfoList = b.havePodsWithAffinityNodeInfoList
-	s.havePodsWithRequiredAntiAffinityNodeInfoList = b.havePodsWithRequiredAntiAffinityNodeInfoList
-	s.usedPVCRefCounts = b.usedPVCRefCounts
-	s.podGroupStates = b.podGroupStates
-}
-
 // Snapshot is a snapshot of cache NodeInfo and NodeTree order. The scheduler takes a
 // snapshot at the beginning of each scheduling cycle and uses it for its operations in that cycle.
 type Snapshot struct {
