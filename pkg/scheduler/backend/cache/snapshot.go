@@ -18,12 +18,12 @@ package cache
 
 import (
 	"fmt"
-	"maps"
 	"slices"
 
 	v1 "k8s.io/api/core/v1"
 	schedulingv1alpha3 "k8s.io/api/scheduling/v1alpha3"
 	schedulingv1beta1 "k8s.io/api/scheduling/v1beta1"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
@@ -41,6 +41,40 @@ type placementNodes struct {
 	// nodeInfoSet contains the set of nodes in the placement.
 	// This is useful for quickly checking if a node belongs the the placement.
 	nodeInfoSet sets.Set[string]
+}
+
+// undoEntry is the recorded inverse of a single speculative snapshot mutation.
+type undoEntry struct {
+	// version is the undo log's version right after this entry was recorded.
+	version uint64
+	revert  func()
+}
+
+// undoLog records the inverses of speculative snapshot mutations in LIFO order.
+// Restoring to a version pops and executes the inverses of everything recorded
+// after that version, returning the snapshot to the exact state it had then.
+type undoLog struct {
+	entries []undoEntry
+	// version increases on every recorded mutation and never decreases, so a
+	// version captured at any point stays unique for the snapshot's lifetime.
+	version uint64
+}
+
+func (l *undoLog) record(revert func()) {
+	l.version++
+	l.entries = append(l.entries, undoEntry{version: l.version, revert: revert})
+}
+
+// restoreTo pops and executes revert functions until the log is back at version v.
+// Entries recorded at or before v are left untouched.
+func (l *undoLog) restoreTo(v uint64) {
+	for len(l.entries) > 0 && l.entries[len(l.entries)-1].version > v {
+		e := l.entries[len(l.entries)-1]
+		// Clear the reference to prevent a potential memory leak.
+		l.entries[len(l.entries)-1] = undoEntry{}
+		l.entries = l.entries[:len(l.entries)-1]
+		e.revert()
+	}
 }
 
 // snapshotBackupData stores shallow copies of original snapshot data.
@@ -112,10 +146,15 @@ type Snapshot struct {
 	placementNodes *placementNodes
 	// genericWorkloadEnabled stores the GenericWorkload feature gate value.
 	genericWorkloadEnabled bool
-	// snapshotBackup is used for storing original
-	// snapshot info before mutations. It is only used during the mutation session.
-	// StartMutation will fill it and EndMutation will restore data from it.
-	snapshotBackup *snapshotBackupData
+	// undo records the inverses of the speculative mutations applied during a
+	// mutation session so that EndMutations can restore the pre-session state
+	// in O(#mutations) instead of backing up the whole snapshot up front.
+	undo undoLog
+	// sessionActive reports whether a mutation session is in progress.
+	sessionActive bool
+	// sessionVersion is the undo log version captured by StartMutations;
+	// EndMutations restores the snapshot back to it.
+	sessionVersion uint64
 	// compositePodGroupEnabled stores the CompositePodGroup feature gate value.
 	compositePodGroupEnabled bool
 }
@@ -269,58 +308,30 @@ func createPodGroupStates(pods []*v1.Pod) map[fwk.EntityKey]*podGroupStateSnapsh
 	return podGroupStates
 }
 
-// StartMutations starts a mutation session by backing up the current snapshot state.
+// StartMutations starts a mutation session by recording the current undo log version.
 // This function should be used for mutating the snapshot during a single pod group scheduling cycle.
-// This function does deep copies of the snapshot and saves the original objects to restore them when EndMutations is called.
+// It is O(1): instead of backing up the snapshot, every mutation made through the
+// session (AddPod, RemovePod) registers its inverse in the snapshot's undo log, and
+// EndMutations restores the pre-session state by executing those inverses in LIFO order.
 // StartMutations cannot be called when the previous mutation session has not ended.
 func (s *Snapshot) StartMutations() error {
-	if s.snapshotBackup != nil {
+	if s.sessionActive {
 		return fmt.Errorf("cannot stack mutations")
 	}
-	s.snapshotBackup = newSnapshotBackupData(s)
-
-	s.nodeInfoMap = make(map[string]*framework.NodeInfo)
-	for k, v := range s.snapshotBackup.nodeInfoMap {
-		s.nodeInfoMap[k] = v.Snapshot().(*framework.NodeInfo)
-	}
-
-	s.nodeInfoList = make([]fwk.NodeInfo, 0, len(s.nodeInfoMap))
-	s.havePodsWithAffinityNodeInfoList = make([]fwk.NodeInfo, 0, len(s.nodeInfoMap))
-	s.havePodsWithRequiredAntiAffinityNodeInfoList = make([]fwk.NodeInfo, 0, len(s.nodeInfoMap))
-
-	for _, v := range s.snapshotBackup.nodeInfoList {
-		clonedNode := s.nodeInfoMap[v.Node().Name]
-		s.nodeInfoList = append(s.nodeInfoList, clonedNode)
-		if len(clonedNode.PodsWithAffinity) > 0 {
-			s.havePodsWithAffinityNodeInfoList = append(s.havePodsWithAffinityNodeInfoList, clonedNode)
-		}
-		if len(clonedNode.PodsWithRequiredAntiAffinity) > 0 {
-			s.havePodsWithRequiredAntiAffinityNodeInfoList = append(s.havePodsWithRequiredAntiAffinityNodeInfoList, clonedNode)
-		}
-	}
-
-	s.usedPVCRefCounts = make(map[string]int)
-	maps.Copy(s.usedPVCRefCounts, s.snapshotBackup.usedPVCRefCounts)
-
-	if s.genericWorkloadEnabled {
-		s.podGroupStates = make(map[fwk.EntityKey]*podGroupStateSnapshot)
-		for k, v := range s.snapshotBackup.podGroupStates {
-			s.podGroupStates[k] = v.Clone()
-		}
-	}
-
+	s.sessionActive = true
+	s.sessionVersion = s.undo.version
 	return nil
 }
 
-// EndMutations ends the mutation session and restores the snapshot state from before StartMutations.
-// If StartMutation was not called before EndMutation, EndMutation will do nothing.
+// EndMutations ends the mutation session and restores the snapshot state from before StartMutations
+// by executing the recorded inverses of all mutations made during the session, in LIFO order.
+// The cost is proportional to the number of mutations made during the session.
 func (s *Snapshot) EndMutations() error {
-	if s.snapshotBackup == nil {
+	if !s.sessionActive {
 		return fmt.Errorf("no mutation session started")
 	}
-
-	s.snapshotBackup.restore(s)
-	s.snapshotBackup = nil
+	s.sessionActive = false
+	s.undo.restoreTo(s.sessionVersion)
 	return nil
 }
 
@@ -773,10 +784,11 @@ func (s *Snapshot) ListNodesInPlacement() ([]fwk.NodeInfo, error) {
 // via RemovePod(). The state will be reverted when EndMutation is called.
 // This function is not thread safe, so it should be executed when no other routines can write/read from the snapshot.
 func (s *Snapshot) AddPod(podInfo fwk.PodInfo, nodeName string) error {
-	if s.snapshotBackup == nil {
+	if !s.sessionActive {
 		return fmt.Errorf("AddPod() called outside of mutation session")
 	}
 	nodeInfo, ok := s.nodeInfoMap[nodeName]
+	created := !ok
 	if !ok {
 		nodeInfo = framework.NewNodeInfo()
 		s.nodeInfoMap[nodeName] = nodeInfo
@@ -786,15 +798,22 @@ func (s *Snapshot) AddPod(podInfo fwk.PodInfo, nodeName string) error {
 	hadPodsWithRequiredAntiAffinity := len(nodeInfo.PodsWithRequiredAntiAffinity) > 0
 
 	pod := podInfo.GetPod()
+	// Calling AddPodInfo increases the Generation number of the nodeInfo.
+	// Since this operation only affects the snapshot,
+	// we should keep the old number to remain consistent with the cached value.
+	oldGeneration := nodeInfo.Generation
 	nodeInfo.AddPodInfo(podInfo)
+	nodeInfo.Generation = oldGeneration
 
 	// nodeInfo.AddPodInfo maintains the NodeInfo's affinity and PVC indexes;
 	// the snapshot-wide indexes must be updated to match, otherwise inter-pod
 	// (anti-)affinity and VolumeRestrictions plugins observe stale state.
-	if !hadPodsWithAffinity && len(nodeInfo.PodsWithAffinity) > 0 {
+	addedToAffinityList := !hadPodsWithAffinity && len(nodeInfo.PodsWithAffinity) > 0
+	if addedToAffinityList {
 		s.havePodsWithAffinityNodeInfoList = append(s.havePodsWithAffinityNodeInfoList, nodeInfo)
 	}
-	if !hadPodsWithRequiredAntiAffinity && len(nodeInfo.PodsWithRequiredAntiAffinity) > 0 {
+	addedToAntiAffinityList := !hadPodsWithRequiredAntiAffinity && len(nodeInfo.PodsWithRequiredAntiAffinity) > 0
+	if addedToAntiAffinityList {
 		s.havePodsWithRequiredAntiAffinityNodeInfoList = append(s.havePodsWithRequiredAntiAffinityNodeInfoList, nodeInfo)
 	}
 
@@ -802,12 +821,42 @@ func (s *Snapshot) AddPod(podInfo fwk.PodInfo, nodeName string) error {
 		s.usedPVCRefCounts[pvcKey]++
 	}
 
+	var pgMembership *podGroupMembership
 	if s.genericWorkloadEnabled && pod.Spec.SchedulingGroup != nil {
 		pgKey := fwk.PodGroupKey(pod.Namespace, *pod.Spec.SchedulingGroup.PodGroupName)
 		if pgs, ok := s.podGroupStates[pgKey]; ok {
+			pgMembership = capturePodGroupMembership(pgs, pod.UID)
 			pgs.addPod(pod)
 		}
 	}
+
+	s.undo.record(func() {
+		// The LIFO restore order guarantees the snapshot is in the exact state
+		// this AddPod left it in, so the added pod is the tail element of every
+		// NodeInfo slice it was appended to and removal is an exact inverse.
+		if err := nodeInfo.RemovePod(klog.Background(), pod); err != nil {
+			utilruntime.HandleError(fmt.Errorf("reverting AddPod of pod %s/%s on node %s: %w", pod.Namespace, pod.Name, nodeName, err))
+		}
+		nodeInfo.Generation = oldGeneration
+		if addedToAffinityList {
+			s.havePodsWithAffinityNodeInfoList = removeNodeInfoTail(s.havePodsWithAffinityNodeInfoList, nodeInfo)
+		}
+		if addedToAntiAffinityList {
+			s.havePodsWithRequiredAntiAffinityNodeInfoList = removeNodeInfoTail(s.havePodsWithRequiredAntiAffinityNodeInfoList, nodeInfo)
+		}
+		for pvcKey := range framework.PodPVCKeys(pod) {
+			s.usedPVCRefCounts[pvcKey]--
+			if s.usedPVCRefCounts[pvcKey] <= 0 {
+				delete(s.usedPVCRefCounts, pvcKey)
+			}
+		}
+		if pgMembership != nil {
+			pgMembership.restore()
+		}
+		if created {
+			delete(s.nodeInfoMap, nodeName)
+		}
+	})
 
 	return nil
 }
@@ -817,7 +866,7 @@ func (s *Snapshot) AddPod(podInfo fwk.PodInfo, nodeName string) error {
 // The state will be reverted when EndMutation is called.
 // This function is not thread safe, so it should be executed when no other routines can write/read from the snapshot.
 func (s *Snapshot) RemovePod(logger klog.Logger, pod *v1.Pod, nodeName string) error {
-	if s.snapshotBackup == nil {
+	if !s.sessionActive {
 		return fmt.Errorf("RemovePod() called outside of mutation session")
 	}
 	nodeInfo, ok := s.nodeInfoMap[nodeName]
@@ -825,21 +874,42 @@ func (s *Snapshot) RemovePod(logger klog.Logger, pod *v1.Pod, nodeName string) e
 		return fmt.Errorf("node %q not found in the snapshot", nodeName)
 	}
 
+	key, err := framework.GetPodKey(pod)
+	if err != nil {
+		return err
+	}
+	// Capture the removed PodInfo and its positions in the NodeInfo slices before
+	// the removal, so the recorded inverse can restore the exact slice layout
+	// (NodeInfo removal swap-deletes, which moves the tail element).
+	podIdx, removedPodInfo := indexOfPodKey(nodeInfo.Pods, key)
+	if removedPodInfo == nil {
+		return fmt.Errorf("no corresponding pod %s in pods of node %s", pod.Name, nodeInfo.Node().Name)
+	}
+	affIdx, _ := indexOfPodKey(nodeInfo.PodsWithAffinity, key)
+	antiAffIdx, _ := indexOfPodKey(nodeInfo.PodsWithRequiredAntiAffinity, key)
+
 	hadPodsWithAffinity := len(nodeInfo.PodsWithAffinity) > 0
 	hadPodsWithRequiredAntiAffinity := len(nodeInfo.PodsWithRequiredAntiAffinity) > 0
 
+	// Calling RemovePod increases the Generation number of the nodeInfo.
+	// Since this operation only affects the snapshot,
+	// we should keep the old number to remain consistent with the cached value.
+	oldGeneration := nodeInfo.Generation
 	if err := nodeInfo.RemovePod(logger, pod); err != nil {
 		return err
 	}
+	nodeInfo.Generation = oldGeneration
 
 	havePodsWithAffinity := len(nodeInfo.PodsWithAffinity) > 0
 	havePodsWithRequiredAntiAffinity := len(nodeInfo.PodsWithRequiredAntiAffinity) > 0
 
+	removedFromAffinityListAt := -1
 	if hadPodsWithAffinity && !havePodsWithAffinity {
-		s.havePodsWithAffinityNodeInfoList = removeNodeInfoFromList(logger, s.havePodsWithAffinityNodeInfoList, nodeInfo)
+		s.havePodsWithAffinityNodeInfoList, removedFromAffinityListAt = removeNodeInfoFromList(logger, s.havePodsWithAffinityNodeInfoList, nodeInfo)
 	}
+	removedFromAntiAffinityListAt := -1
 	if hadPodsWithRequiredAntiAffinity && !havePodsWithRequiredAntiAffinity {
-		s.havePodsWithRequiredAntiAffinityNodeInfoList = removeNodeInfoFromList(logger, s.havePodsWithRequiredAntiAffinityNodeInfoList, nodeInfo)
+		s.havePodsWithRequiredAntiAffinityNodeInfoList, removedFromAntiAffinityListAt = removeNodeInfoFromList(logger, s.havePodsWithRequiredAntiAffinityNodeInfoList, nodeInfo)
 	}
 	for pvcKey := range framework.PodPVCKeys(pod) {
 		s.usedPVCRefCounts[pvcKey]--
@@ -848,30 +918,164 @@ func (s *Snapshot) RemovePod(logger klog.Logger, pod *v1.Pod, nodeName string) e
 		}
 	}
 
+	var pgMembership *podGroupMembership
 	if s.genericWorkloadEnabled && pod.Spec.SchedulingGroup != nil {
 		pgKey := fwk.PodGroupKey(pod.Namespace, *pod.Spec.SchedulingGroup.PodGroupName)
 		if pgs, ok := s.podGroupStates[pgKey]; ok {
+			pgMembership = capturePodGroupMembership(pgs, pod.UID)
 			pgs.deletePod(pod.UID)
 		}
 	}
 
+	deletedFromMap := false
 	if len(nodeInfo.Pods) == 0 && nodeInfo.Node() == nil {
 		delete(s.nodeInfoMap, nodeName)
+		deletedFromMap = true
 	}
+
+	s.undo.record(func() {
+		if deletedFromMap {
+			s.nodeInfoMap[nodeName] = nodeInfo
+		}
+		nodeInfo.AddPodInfo(removedPodInfo)
+		// AddPodInfo appends at the tail; swap the entries back to their
+		// pre-removal positions to undo the swap-delete exactly.
+		swapTailTo(nodeInfo.Pods, podIdx)
+		if affIdx >= 0 {
+			swapTailTo(nodeInfo.PodsWithAffinity, affIdx)
+		}
+		if antiAffIdx >= 0 {
+			swapTailTo(nodeInfo.PodsWithRequiredAntiAffinity, antiAffIdx)
+		}
+		nodeInfo.Generation = oldGeneration
+		if removedFromAffinityListAt >= 0 {
+			s.havePodsWithAffinityNodeInfoList = undoRemoveNodeInfoFromList(s.havePodsWithAffinityNodeInfoList, nodeInfo, removedFromAffinityListAt)
+		}
+		if removedFromAntiAffinityListAt >= 0 {
+			s.havePodsWithRequiredAntiAffinityNodeInfoList = undoRemoveNodeInfoFromList(s.havePodsWithRequiredAntiAffinityNodeInfoList, nodeInfo, removedFromAntiAffinityListAt)
+		}
+		for pvcKey := range framework.PodPVCKeys(pod) {
+			s.usedPVCRefCounts[pvcKey]++
+		}
+		if pgMembership != nil {
+			pgMembership.restore()
+		}
+	})
 	return nil
 }
 
-// removeNodeInfoFromList quickly removes a NodeInfo from a list without respecting the order of the list.
-func removeNodeInfoFromList(logger klog.Logger, list []fwk.NodeInfo, nodeInfoToRemove fwk.NodeInfo) []fwk.NodeInfo {
+// indexOfPodKey returns the index and value of the pod with the given key in
+// the slice, or (-1, nil) if it is not present.
+func indexOfPodKey(pods []fwk.PodInfo, key string) (int, fwk.PodInfo) {
+	for i := range pods {
+		podKey, err := framework.GetPodKey(pods[i].GetPod())
+		if err != nil {
+			continue
+		}
+		if podKey == key {
+			return i, pods[i]
+		}
+	}
+	return -1, nil
+}
+
+// swapTailTo moves the tail element of the slice to position i, swapping the
+// two elements. It is the exact inverse of a swap-delete at index i followed by
+// re-appending the deleted element at the tail.
+func swapTailTo[T any](s []T, i int) {
+	last := len(s) - 1
+	if i >= 0 && i < last {
+		s[i], s[last] = s[last], s[i]
+	}
+}
+
+// removeNodeInfoFromList quickly removes a NodeInfo from a list without respecting
+// the order of the list (swap-delete). It returns the updated list and the index
+// the NodeInfo was removed from, or -1 if it was not found.
+func removeNodeInfoFromList(logger klog.Logger, list []fwk.NodeInfo, nodeInfoToRemove fwk.NodeInfo) ([]fwk.NodeInfo, int) {
 	for i, nodeInfo := range list {
 		if nodeInfo == nodeInfoToRemove {
 			list[i] = list[len(list)-1]
 			list[len(list)-1] = nil
-			return list[:len(list)-1]
+			return list[:len(list)-1], i
 		}
 	}
 	logger.Error(nil, "NodeInfo not found in the list", "nodeInfo", nodeInfoToRemove)
+	return list, -1
+}
+
+// undoRemoveNodeInfoFromList reverts a swap-delete performed by
+// removeNodeInfoFromList that removed nodeInfo from position i.
+func undoRemoveNodeInfoFromList(list []fwk.NodeInfo, nodeInfo fwk.NodeInfo, i int) []fwk.NodeInfo {
+	if i >= len(list) {
+		// The removed element was the tail; the swap-delete was a plain truncation.
+		return append(list, nodeInfo)
+	}
+	list = append(list, list[i])
+	list[i] = nodeInfo
 	return list
+}
+
+// removeNodeInfoTail removes nodeInfo from the list, searching from the tail.
+// It is used to revert an append made by AddPod: under LIFO restore order the
+// appended entry is the last occurrence in the list.
+func removeNodeInfoTail(list []fwk.NodeInfo, nodeInfoToRemove fwk.NodeInfo) []fwk.NodeInfo {
+	for i := len(list) - 1; i >= 0; i-- {
+		if list[i] == nodeInfoToRemove {
+			list = append(list[:i], list[i+1:]...)
+			return list
+		}
+	}
+	utilruntime.HandleError(fmt.Errorf("cannot revert snapshot list append: NodeInfo %v not found", nodeInfoToRemove))
+	return list
+}
+
+// podGroupMembership captures a pod's exact membership state in a pod group
+// state snapshot so that the inverse of addPod/deletePod can restore it precisely.
+type podGroupMembership struct {
+	pgs         *podGroupStateSnapshot
+	uid         types.UID
+	pod         *v1.Pod
+	inAll       bool
+	unscheduled bool
+	assumedPod  *v1.Pod
+	inAssumed   bool
+	assigned    bool
+	generation  int64
+}
+
+func capturePodGroupMembership(pgs *podGroupStateSnapshot, uid types.UID) *podGroupMembership {
+	m := &podGroupMembership{pgs: pgs, uid: uid, generation: pgs.generation}
+	m.pod, m.inAll = pgs.allPods[uid]
+	m.unscheduled = pgs.unscheduledPods.Has(uid)
+	m.assumedPod, m.inAssumed = pgs.assumedPods[uid]
+	m.assigned = pgs.assignedPods.Has(uid)
+	return m
+}
+
+func (m *podGroupMembership) restore() {
+	pgs := m.pgs
+	if m.inAll {
+		pgs.allPods[m.uid] = m.pod
+	} else {
+		delete(pgs.allPods, m.uid)
+	}
+	if m.unscheduled {
+		pgs.unscheduledPods.Insert(m.uid)
+	} else {
+		pgs.unscheduledPods.Delete(m.uid)
+	}
+	if m.inAssumed {
+		pgs.assumedPods[m.uid] = m.assumedPod
+	} else {
+		delete(pgs.assumedPods, m.uid)
+	}
+	if m.assigned {
+		pgs.assignedPods.Insert(m.uid)
+	} else {
+		pgs.assignedPods.Delete(m.uid)
+	}
+	pgs.generation = m.generation
 }
 
 // GetRootKeyForGroup returns the root key of the given EntityKey.
