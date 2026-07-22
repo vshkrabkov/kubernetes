@@ -26,6 +26,7 @@ import (
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	"k8s.io/klog/v2/ktesting"
+	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
@@ -158,13 +159,17 @@ func TestSnapshot_UndoLogRestoreProperty(t *testing.T) {
 			makePod := func(nodeName string) *v1.Pod {
 				podID++
 				p := st.MakePod().Name(fmt.Sprintf("p-%d", podID)).Namespace("ns").UID(fmt.Sprintf("p-%d", podID)).Node(nodeName).Req(map[v1.ResourceName]string{v1.ResourceCPU: "100m", v1.ResourceMemory: "64Mi"})
-				switch rng.Intn(4) {
+				switch rng.Intn(5) {
 				case 0:
 					p = p.PodAffinityExists("k", "zone", st.PodAffinityWithRequiredReq)
 				case 1:
 					p = p.PodAntiAffinityExists("k", "zone", st.PodAntiAffinityWithRequiredReq)
 				case 2:
 					p = p.PVC(fmt.Sprintf("pvc-%d", rng.Intn(5)))
+				case 3:
+					// Pod group member: exercises the podGroupMembership
+					// capture/restore path of the undo log.
+					p = p.PodGroupName(fmt.Sprintf("pg-%d", rng.Intn(3)))
 				}
 				return p.Obj()
 			}
@@ -298,5 +303,109 @@ func BenchmarkMutationSession(b *testing.B) {
 				}
 			})
 		}
+	}
+}
+
+// TestSnapshot_UndoLog_PodGroupMembershipRestore verifies that reverting a
+// session mutation restores a pod's EXACT pre-mutation membership in its pod
+// group state — in particular for pods that were already tracked by the group
+// before the mutation. This is the main production shape: podgrouppreemption
+// materializes assignments for preemptor pods that the group already tracks as
+// unscheduled (AddPod moves them unscheduled -> assigned), and removes victim
+// pods the group tracks as assigned. The restore must move memberships back,
+// not blindly delete them.
+func TestSnapshot_UndoLog_PodGroupMembershipRestore(t *testing.T) {
+	featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
+		features.GenericWorkload: true,
+	})
+	logger, _ := ktesting.NewTestContext(t)
+
+	node := st.MakeNode().Name("node-1").Capacity(map[v1.ResourceName]string{v1.ResourceCPU: "8", v1.ResourcePods: "50"}).Obj()
+	// A preemptor pod: tracked by the group as unscheduled (no node yet).
+	preemptor := st.MakePod().Name("preemptor").Namespace("ns").UID("preemptor").PodGroupName("pg-1").Obj()
+	// A victim pod: tracked by the group as assigned (running on node-1).
+	victim := st.MakePod().Name("victim").Namespace("ns").UID("victim").Node("node-1").PodGroupName("pg-1").Obj()
+
+	s := NewSnapshot([]*v1.Pod{preemptor, victim}, []*v1.Node{node})
+
+	pgKey := fwk.PodGroupKey("ns", "pg-1")
+	pgs, ok := s.podGroupStates[pgKey]
+	if !ok {
+		t.Fatal("pod group state not found")
+	}
+	// Pre-session expectations.
+	if !pgs.unscheduledPods.Has(preemptor.UID) || pgs.assignedPods.Has(preemptor.UID) {
+		t.Fatal("preemptor should start unscheduled")
+	}
+	if !pgs.assignedPods.Has(victim.UID) {
+		t.Fatal("victim should start assigned")
+	}
+	origPreemptorPtr := pgs.allPods[preemptor.UID]
+	origVictimPtr := pgs.allPods[victim.UID]
+	origGeneration := pgs.generation
+
+	if err := s.StartMutations(); err != nil {
+		t.Fatalf("StartMutations: %v", err)
+	}
+
+	// Remove the victim (its group membership: assigned -> gone)...
+	if err := s.RemovePod(logger, victim, "node-1"); err != nil {
+		t.Fatalf("RemovePod(victim): %v", err)
+	}
+	if pgs.assignedPods.Has(victim.UID) {
+		t.Fatal("victim should not be assigned after RemovePod")
+	}
+
+	// ...materialize the preemptor's assignment: the pod is ALREADY tracked by
+	// the group (unscheduled); AddPod moves it unscheduled -> assigned.
+	assigned := preemptor.DeepCopy()
+	assigned.Spec.NodeName = "node-1"
+	pi, err := framework.NewPodInfo(assigned)
+	if err != nil {
+		t.Fatalf("NewPodInfo: %v", err)
+	}
+	if err := s.AddPod(pi, "node-1"); err != nil {
+		t.Fatalf("AddPod(preemptor): %v", err)
+	}
+	if !pgs.assignedPods.Has(preemptor.UID) || pgs.unscheduledPods.Has(preemptor.UID) {
+		t.Fatal("preemptor should be assigned during the session")
+	}
+
+	// Reprieve the victim (already absent from the group; AddPod re-adds it).
+	victimInfo, err := framework.NewPodInfo(victim)
+	if err != nil {
+		t.Fatalf("NewPodInfo(victim): %v", err)
+	}
+	if err := s.AddPod(victimInfo, "node-1"); err != nil {
+		t.Fatalf("AddPod(victim reprieval): %v", err)
+	}
+	if !pgs.assignedPods.Has(victim.UID) {
+		t.Fatal("victim should be assigned again after reprieval")
+	}
+
+	if err := s.EndMutations(); err != nil {
+		t.Fatalf("EndMutations: %v", err)
+	}
+
+	// The preemptor must be back to unscheduled — NOT deleted from the group.
+	if !pgs.unscheduledPods.Has(preemptor.UID) {
+		t.Error("preemptor must be unscheduled again after restore")
+	}
+	if pgs.assignedPods.Has(preemptor.UID) {
+		t.Error("preemptor must not remain assigned after restore")
+	}
+	// The victim must be back to assigned.
+	if !pgs.assignedPods.Has(victim.UID) {
+		t.Error("victim must be assigned again after restore")
+	}
+	// Even the stored pod pointers and the group generation are restored.
+	if pgs.allPods[preemptor.UID] != origPreemptorPtr {
+		t.Error("preemptor allPods entry must be the original pointer")
+	}
+	if pgs.allPods[victim.UID] != origVictimPtr {
+		t.Error("victim allPods entry must be the original pointer")
+	}
+	if pgs.generation != origGeneration {
+		t.Errorf("pod group generation not restored: want %d, got %d", origGeneration, pgs.generation)
 	}
 }
