@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"slices"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -33,7 +34,7 @@ import (
 const preFilterStateKey = "PreFilter" + Name
 
 // preFilterState computed at PreFilter and used at Filter.
-// It combines CriticalPaths and TpValueToMatchNum to represent:
+// It combines MinMatchNum, DomainsAtCount and TpValueToMatchNum to represent:
 // (1) critical paths where the least pods are matched on each spread constraint.
 // (2) number of pods matched on each spread constraint.
 // A nil preFilterState denotes it's not set at all (in PreFilter phase);
@@ -41,31 +42,23 @@ const preFilterStateKey = "PreFilter" + Name
 // Fields are exported for comparison during testing.
 type preFilterState struct {
 	Constraints []topologySpreadConstraint
-	// CriticalPaths is a slice indexed by constraint index.
-	// Per each entry, we record 2 critical paths instead of all critical paths.
-	// CriticalPaths[i][0].MatchNum always holds the minimum matching number.
-	// CriticalPaths[i][1].MatchNum is always greater or equal to CriticalPaths[i][0].MatchNum, but
-	// it's not guaranteed to be the 2nd minimum match number.
-	CriticalPaths []*criticalPaths
-	// TpValueToMatchNum is a slice indexed by constraint index.
-	// Each entry is keyed with topology value, and valued with the number of matching pods.
+	// MinMatchNum[i] is the global minimum number of matching pods across all
+	// eligible topology domains of Constraints[i].
+	MinMatchNum []int
+	// DomainsAtCount[i][k] is how many topology domains currently hold exactly k
+	// matching pods. It is what keeps MinMatchNum exact in O(1) under the ±1
+	// updates performed by AddPod/RemovePod.
+	DomainsAtCount []map[int]int
 	TpValueToMatchNum []map[string]int
 }
 
 // minMatchNum returns the global minimum for the calculation of skew while taking MinDomains into account.
 func (s *preFilterState) minMatchNum(constraintID int, minDomains int32) (int, error) {
-	paths := s.CriticalPaths[constraintID]
-
-	minMatchNum := paths[0].MatchNum
-	domainsNum := len(s.TpValueToMatchNum[constraintID])
-
-	if domainsNum < int(minDomains) {
-		// When the number of eligible domains with matching topology keys is less than `minDomains`,
-		// it treats "global minimum" as 0.
-		minMatchNum = 0
+	if len(s.TpValueToMatchNum[constraintID]) < int(minDomains) {
+		// Fewer eligible domains than minDomains: treat the global minimum as 0.
+		return 0, nil
 	}
-
-	return minMatchNum, nil
+	return s.MinMatchNum[constraintID], nil
 }
 
 // Clone makes a copy of the given state.
@@ -74,65 +67,40 @@ func (s *preFilterState) Clone() fwk.StateData {
 		return nil
 	}
 	copy := preFilterState{
-		// Constraints are shared because they don't change.
-		Constraints:       s.Constraints,
-		CriticalPaths:     make([]*criticalPaths, len(s.CriticalPaths)),
+		Constraints:       s.Constraints, // shared, immutable
+		MinMatchNum:       slices.Clone(s.MinMatchNum),
+		DomainsAtCount:    make([]map[int]int, len(s.DomainsAtCount)),
 		TpValueToMatchNum: make([]map[string]int, len(s.TpValueToMatchNum)),
 	}
-	for i, paths := range s.CriticalPaths {
-		copy.CriticalPaths[i] = &criticalPaths{paths[0], paths[1]}
+	for i, h := range s.DomainsAtCount {
+		copy.DomainsAtCount[i] = maps.Clone(h)
 	}
-	for i, tpMap := range s.TpValueToMatchNum {
-		copy.TpValueToMatchNum[i] = maps.Clone(tpMap)
+	for i, m := range s.TpValueToMatchNum {
+		copy.TpValueToMatchNum[i] = maps.Clone(m)
 	}
 	return &copy
 }
 
-// CAVEAT: the reason that `[2]criticalPath` can work is based on the implementation of current
-// preemption algorithm, in particular the following 2 facts:
-// Fact 1: we only preempt pods on the same node, instead of pods on multiple nodes.
-// Fact 2: each node is evaluated on a separate copy of the preFilterState during its preemption cycle.
-// If we plan to turn to a more complex algorithm like "arbitrary pods on multiple nodes", this
-// structure needs to be revisited.
-// Fields are exported for comparison during testing.
-type criticalPaths [2]struct {
-	// TopologyValue denotes the topology value mapping to topology key.
-	TopologyValue string
-	// MatchNum denotes the number of matching pods.
-	MatchNum int
-}
-
-func newCriticalPaths() *criticalPaths {
-	return &criticalPaths{{MatchNum: math.MaxInt32}, {MatchNum: math.MaxInt32}}
-}
-
-func (p *criticalPaths) update(tpVal string, num int) {
-	// first verify if `tpVal` exists or not
-	i := -1
-	if tpVal == p[0].TopologyValue {
-		i = 0
-	} else if tpVal == p[1].TopologyValue {
-		i = 1
+// updateMin keeps MinMatchNum[constraintID] exact after a single domain moved from
+// `old` to `cur`. It relies on |cur-old| == 1, which holds because AddPod/RemovePod
+// apply exactly one pod at a time.
+func (s *preFilterState) updateMin(constraintID, old, cur int) {
+	hist := s.DomainsAtCount[constraintID]
+	hist[old]--
+	if hist[old] <= 0 {
+		delete(hist, old)
 	}
+	hist[cur]++
 
-	if i >= 0 {
-		// `tpVal` exists
-		p[i].MatchNum = num
-		if p[0].MatchNum > p[1].MatchNum {
-			// swap paths[0] and paths[1]
-			p[0], p[1] = p[1], p[0]
-		}
-	} else {
-		// `tpVal` doesn't exist
-		if num < p[0].MatchNum {
-			// update paths[1] with paths[0]
-			p[1] = p[0]
-			// update paths[0]
-			p[0].TopologyValue, p[0].MatchNum = tpVal, num
-		} else if num < p[1].MatchNum {
-			// update paths[1]
-			p[1].TopologyValue, p[1].MatchNum = tpVal, num
-		}
+	switch {
+	case cur < s.MinMatchNum[constraintID]:
+		// A domain dropped below the current minimum (delta == -1).
+		s.MinMatchNum[constraintID] = cur
+	case old == s.MinMatchNum[constraintID] && hist[old] == 0:
+		// The last domain sitting at the minimum moved up (delta == +1). Every other
+		// domain was already >= old, and this one is now old+1 == cur, so cur is the
+		// new global minimum — nothing needs to be scanned.
+		s.MinMatchNum[constraintID] = cur
 	}
 }
 
@@ -211,8 +179,10 @@ func (pl *PodTopologySpread) updateWithPod(logger klog.Logger, s *preFilterState
 		}
 
 		v := node.Labels[constraint.TopologyKey]
-		s.TpValueToMatchNum[i][v] += delta
-		s.CriticalPaths[i].update(v, s.TpValueToMatchNum[i][v])
+		old := s.TpValueToMatchNum[i][v]
+		cur := old + delta
+		s.TpValueToMatchNum[i][v] = cur
+		s.updateMin(i, old, cur)
 	}
 }
 
@@ -250,7 +220,8 @@ func (pl *PodTopologySpread) calPreFilterState(ctx context.Context, pod *v1.Pod,
 	logger := klog.FromContext(ctx)
 	s := preFilterState{
 		Constraints:       constraints,
-		CriticalPaths:     make([]*criticalPaths, len(constraints)),
+		MinMatchNum:       make([]int, len(constraints)),
+		DomainsAtCount:    make([]map[int]int, len(constraints)),
 		TpValueToMatchNum: make([]map[string]int, len(constraints)),
 	}
 	for i := 0; i < len(constraints); i++ {
@@ -302,12 +273,14 @@ func (pl *PodTopologySpread) calPreFilterState(ctx context.Context, pod *v1.Pod,
 		}
 	}
 
-	// calculate min match for each constraint and topology value
 	for i := 0; i < len(constraints); i++ {
-		s.CriticalPaths[i] = newCriticalPaths()
-
-		for value, num := range s.TpValueToMatchNum[i] {
-			s.CriticalPaths[i].update(value, num)
+		s.MinMatchNum[i] = math.MaxInt32 // preserves today's behaviour when no domain is eligible
+		s.DomainsAtCount[i] = make(map[int]int)
+		for _, num := range s.TpValueToMatchNum[i] {
+			s.DomainsAtCount[i][num]++
+			if num < s.MinMatchNum[i] {
+				s.MinMatchNum[i] = num
+			}
 		}
 	}
 
@@ -345,7 +318,7 @@ func (pl *PodTopologySpread) Filter(ctx context.Context, cycleState fwk.CycleSta
 		// 'existing matching num' + 'if self-match (1 or 0)' - 'global minimum' <= 'maxSkew'
 		minMatchNum, err := s.minMatchNum(i, c.MinDomains)
 		if err != nil {
-			logger.Error(err, "Internal error occurred while retrieving value precalculated in PreFilter", "topologyKey", tpKey, "paths", s.CriticalPaths[i])
+			logger.Error(err, "Internal error occurred while retrieving value precalculated in PreFilter", "topologyKey", tpKey, "minMatchNum", s.MinMatchNum[i])
 			continue
 		}
 

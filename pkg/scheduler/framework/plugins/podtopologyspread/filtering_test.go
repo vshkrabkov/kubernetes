@@ -18,6 +18,7 @@ package podtopologyspread
 
 import (
 	"context"
+	"maps"
 	"math"
 	"testing"
 
@@ -40,19 +41,7 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-var stateCmpOpts = []cmp.Option{
-	cmp.Comparer(func(p1, p2 criticalPaths) bool {
-		// Before comparing p1 and p2 we need to make sure that TopologyValues
-		// paired with the same MatchNum values are sorted alphabetically.
-		// It's not possible to substitute this sorting with calling cmpopts.SortSlices()
-		// instead, because the lessFn in SortSlices would not modify the actual
-		// criticalPaths objects, and the default comparer function would still
-		// operate on "unsorted" TopologyValue fields.
-		p1.sort()
-		p2.sort()
-		return p1[0] == p2[0] && p1[1] == p2[1]
-	}),
-}
+var stateCmpOpts = []cmp.Option{}
 
 var (
 	topologySpreadFunc = frameworkruntime.FactoryAdapter(feature.Features{}, New)
@@ -68,12 +57,7 @@ func init() {
 	metrics.Register()
 }
 
-func (p *criticalPaths) sort() {
-	if p[0].MatchNum == p[1].MatchNum && p[0].TopologyValue > p[1].TopologyValue {
-		// Swap TopologyValue to make them sorted alphabetically.
-		p[0].TopologyValue, p[1].TopologyValue = p[1].TopologyValue, p[0].TopologyValue
-	}
-}
+
 
 func TestPreFilterState(t *testing.T) {
 	tests := []struct {
@@ -110,7 +94,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone1", 0}, {"zone2", 0}}},
+				MinMatchNum:    []int{0},
+				DomainsAtCount: []map[int]int{{0: 2}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone1": 0,
 					"zone2": 0,
@@ -146,7 +131,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone2", 2}, {"zone1", 3}}},
+				MinMatchNum:    []int{2},
+				DomainsAtCount: []map[int]int{{2: 1, 3: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone1": 3,
 					"zone2": 2,
@@ -182,7 +168,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone2", 0}, {"zone1", 0}}},
+				MinMatchNum:    []int{0},
+				DomainsAtCount: []map[int]int{{0: 2}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone1": 0,
 					"zone2": 0,
@@ -220,7 +207,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone3", 0}, {"zone2", 2}}},
+				MinMatchNum:    []int{0},
+				DomainsAtCount: []map[int]int{{0: 1, 2: 1, 3: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone1": 3,
 					"zone2": 2,
@@ -257,7 +245,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone2", 1}, {"zone1", 2}}},
+				MinMatchNum:    []int{1},
+				DomainsAtCount: []map[int]int{{1: 1, 2: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone1": 2,
 					"zone2": 1,
@@ -304,7 +293,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone1", 3}, {"zone2", 4}}, {{"node-x", 0}, {"node-b", 1}}},
+				MinMatchNum:    []int{3, 0},
+				DomainsAtCount: []map[int]int{{3: 1, 4: 1}, {0: 1, 1: 1, 2: 1, 4: 1}},
 				TpValueToMatchNum: []map[string]int{
 					{
 						"zone1": 3,
@@ -360,7 +350,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone1", 3}, {"zone2", 4}}, {{"node-b", 1}, {"node-a", 2}}},
+				MinMatchNum:    []int{3, 1},
+				DomainsAtCount: []map[int]int{{3: 1, 4: 1}, {1: 1, 2: 1, 4: 1}},
 				TpValueToMatchNum: []map[string]int{
 					{
 						"zone1": 3,
@@ -408,7 +399,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone2", 0}, {"zone1", 1}}, {{"node-a", 0}, {"node-y", 0}}},
+				MinMatchNum:    []int{0, 0},
+				DomainsAtCount: []map[int]int{{0: 1, 1: 1}, {0: 2, 1: 1}},
 				TpValueToMatchNum: []map[string]int{
 					{
 						"zone1": 1,
@@ -461,7 +453,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone1", 3}, {"zone2", 4}}, {{"node-b", 0}, {"node-a", 1}}},
+				MinMatchNum:    []int{3, 0},
+				DomainsAtCount: []map[int]int{{3: 1, 4: 1}, {0: 1, 1: 1, 2: 1}},
 				TpValueToMatchNum: []map[string]int{
 					{
 						"zone1": 3,
@@ -516,7 +509,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone1", 3}, {"zone2", 4}}, {{"node-b", 1}, {"node-a", 2}}},
+				MinMatchNum:    []int{3, 1},
+				DomainsAtCount: []map[int]int{{3: 1, 4: 1}, {1: 1, 2: 1, 4: 1}},
 				TpValueToMatchNum: []map[string]int{
 					{
 						"zone1": 3,
@@ -560,7 +554,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths:     []*criticalPaths{newCriticalPaths(), newCriticalPaths()},
+				MinMatchNum:    []int{math.MaxInt32, math.MaxInt32},
+				DomainsAtCount: []map[int]int{{}, {}},
 				TpValueToMatchNum: []map[string]int{{}, {}},
 			},
 		},
@@ -598,7 +593,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths:     []*criticalPaths{newCriticalPaths()},
+				MinMatchNum:    []int{math.MaxInt32},
+				DomainsAtCount: []map[int]int{{}},
 				TpValueToMatchNum: []map[string]int{{}},
 			},
 		},
@@ -653,7 +649,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone1", 3}, {"zone2", 4}}, {{"node-x", 0}, {"node-b", 1}}},
+				MinMatchNum:    []int{3, 0},
+				DomainsAtCount: []map[int]int{{3: 1, 4: 1}, {0: 1, 1: 1, 2: 1, 4: 1}},
 				TpValueToMatchNum: []map[string]int{
 					{
 						"zone1": 3,
@@ -696,7 +693,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"node-a", 1}, {"node-b", 2}}},
+				MinMatchNum:    []int{1},
+				DomainsAtCount: []map[int]int{{1: 1, 2: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"node-a": 1,
 					"node-b": 2,
@@ -732,7 +730,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"node-a", 1}, {"node-b", 2}}},
+				MinMatchNum:    []int{1},
+				DomainsAtCount: []map[int]int{{1: 1, 2: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"node-a": 1,
 					"node-b": 2,
@@ -768,7 +767,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"node-c", 0}, {"node-a", 1}}},
+				MinMatchNum:    []int{0},
+				DomainsAtCount: []map[int]int{{0: 1, 1: 1, 2: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"node-a": 1,
 					"node-b": 2,
@@ -805,7 +805,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"node-a", 1}, {"node-b", 2}}},
+				MinMatchNum:    []int{1},
+				DomainsAtCount: []map[int]int{{1: 1, 2: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"node-a": 1,
 					"node-b": 2,
@@ -841,7 +842,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"node-c", 0}, {"node-a", 1}}},
+				MinMatchNum:    []int{0},
+				DomainsAtCount: []map[int]int{{0: 1, 1: 1, 2: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"node-a": 1,
 					"node-b": 2,
@@ -877,7 +879,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"node-c", 0}, {"node-a", 1}}},
+				MinMatchNum:    []int{0},
+				DomainsAtCount: []map[int]int{{0: 1, 1: 1, 2: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"node-a": 1,
 					"node-b": 2,
@@ -913,7 +916,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"node-c", 0}, {"node-a", 1}}},
+				MinMatchNum:    []int{0},
+				DomainsAtCount: []map[int]int{{0: 1, 1: 1, 2: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"node-a": 1,
 					"node-b": 2,
@@ -949,7 +953,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyHonor,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"node-a", 1}, {"node-b", 2}}},
+				MinMatchNum:    []int{1},
+				DomainsAtCount: []map[int]int{{1: 1, 2: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"node-a": 1,
 					"node-b": 2,
@@ -985,7 +990,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyHonor,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"node-c", 0}, {"node-a", 1}}},
+				MinMatchNum:    []int{0},
+				DomainsAtCount: []map[int]int{{0: 1, 1: 1, 2: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"node-a": 1,
 					"node-b": 2,
@@ -1030,7 +1036,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone1", 0}, {"zone2", 1}}, {{"node-a", 0}, {"node-x", 1}}},
+				MinMatchNum:    []int{0, 0},
+				DomainsAtCount: []map[int]int{{0: 1, 1: 1}, {0: 1, 1: 1, 2: 1}},
 				TpValueToMatchNum: []map[string]int{
 					{
 						"zone1": 0,
@@ -1080,7 +1087,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone1", 0}, {"zone2", 1}}, {{"node-a", 0}, {"node-x", 1}}},
+				MinMatchNum:    []int{0, 0},
+				DomainsAtCount: []map[int]int{{0: 1, 1: 1}, {0: 1, 1: 1, 2: 1}},
 				TpValueToMatchNum: []map[string]int{
 					{
 						"zone1": 0,
@@ -1133,7 +1141,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone1", 0}, {"zone2", 1}}, {{"node-b", 0}, {"node-x", 1}}},
+				MinMatchNum:    []int{0, 0},
+				DomainsAtCount: []map[int]int{{0: 1, 1: 1}, {0: 1, 1: 1}},
 				TpValueToMatchNum: []map[string]int{
 					{
 						"zone1": 0,
@@ -1186,7 +1195,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyHonor,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone1", 2}, {"zone2", 3}}, {{"node-y", 1}, {"node-x", 2}}},
+				MinMatchNum:    []int{2, 1},
+				DomainsAtCount: []map[int]int{{2: 1, 3: 1}, {1: 1, 2: 1}},
 				TpValueToMatchNum: []map[string]int{
 					{
 						"zone1": 2,
@@ -1229,7 +1239,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone2", 2}, {"zone1", 3}}},
+				MinMatchNum:    []int{2},
+				DomainsAtCount: []map[int]int{{2: 1, 3: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone1": 3,
 					"zone2": 2,
@@ -1266,7 +1277,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone2", 1}, {"zone1", 1}}},
+				MinMatchNum:    []int{1},
+				DomainsAtCount: []map[int]int{{1: 2}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone1": 1,
 					"zone2": 1,
@@ -1303,7 +1315,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone2", 2}, {"zone1", 3}}},
+				MinMatchNum:    []int{2},
+				DomainsAtCount: []map[int]int{{2: 1, 3: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone1": 3,
 					"zone2": 2,
@@ -1340,7 +1353,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone2", 0}, {"zone1", 0}}},
+				MinMatchNum:    []int{0},
+				DomainsAtCount: []map[int]int{{0: 2}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone1": 0,
 					"zone2": 0,
@@ -1377,7 +1391,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone2", 0}, {"zone1", 0}}},
+				MinMatchNum:    []int{0},
+				DomainsAtCount: []map[int]int{{0: 2}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone1": 0,
 					"zone2": 0,
@@ -1413,7 +1428,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone2", 2}, {"zone1", 3}}},
+				MinMatchNum:    []int{2},
+				DomainsAtCount: []map[int]int{{2: 1, 3: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone1": 3,
 					"zone2": 2,
@@ -1459,7 +1475,8 @@ func TestPreFilterState(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone2", 1}, {"zone1", 2}}, {{"zone1", 1}, {"zone2", 3}}},
+				MinMatchNum:    []int{1, 1},
+				DomainsAtCount: []map[int]int{{1: 1, 2: 1}, {1: 1, 3: 1}},
 				TpValueToMatchNum: []map[string]int{
 					{
 						"zone1": 2,
@@ -1555,7 +1572,8 @@ func TestPreFilterStateAddPod(t *testing.T) {
 			},
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{nodeConstraint},
-				CriticalPaths: []*criticalPaths{{{"node-b", 0}, {"node-a", 1}}},
+				MinMatchNum:    []int{0},
+				DomainsAtCount: []map[int]int{{0: 1, 1: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"node-a": 1,
 					"node-b": 0,
@@ -1578,7 +1596,8 @@ func TestPreFilterStateAddPod(t *testing.T) {
 			},
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{nodeConstraint},
-				CriticalPaths: []*criticalPaths{{{"node-a", 1}, {"node-b", 1}}},
+				MinMatchNum:    []int{1},
+				DomainsAtCount: []map[int]int{{1: 2}},
 				TpValueToMatchNum: []map[string]int{{
 					"node-a": 1,
 					"node-b": 1,
@@ -1601,7 +1620,8 @@ func TestPreFilterStateAddPod(t *testing.T) {
 			},
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{nodeConstraint},
-				CriticalPaths: []*criticalPaths{{{"node-a", 0}, {"node-b", 1}}},
+				MinMatchNum:    []int{0},
+				DomainsAtCount: []map[int]int{{0: 1, 1: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"node-a": 0,
 					"node-b": 1,
@@ -1624,7 +1644,8 @@ func TestPreFilterStateAddPod(t *testing.T) {
 			},
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{nodeConstraint},
-				CriticalPaths: []*criticalPaths{{{"node-a", 0}, {"node-b", 2}}},
+				MinMatchNum:    []int{0},
+				DomainsAtCount: []map[int]int{{0: 1, 2: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"node-a": 0,
 					"node-b": 2,
@@ -1646,7 +1667,8 @@ func TestPreFilterStateAddPod(t *testing.T) {
 			},
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{zoneConstraint, nodeConstraint},
-				CriticalPaths: []*criticalPaths{{{"zone2", 0}, {"zone1", 1}}, {{"node-x", 0}, {"node-a", 1}}},
+				MinMatchNum:    []int{0, 0},
+				DomainsAtCount: []map[int]int{{0: 1, 1: 1}, {0: 1, 1: 1}},
 				TpValueToMatchNum: []map[string]int{
 					{
 						"zone1": 1,
@@ -1676,7 +1698,8 @@ func TestPreFilterStateAddPod(t *testing.T) {
 			},
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{zoneConstraint, nodeConstraint},
-				CriticalPaths: []*criticalPaths{{{"zone1", 1}, {"zone2", 1}}, {{"node-a", 1}, {"node-x", 1}}},
+				MinMatchNum:    []int{1, 1},
+				DomainsAtCount: []map[int]int{{1: 2}, {1: 2}},
 				TpValueToMatchNum: []map[string]int{
 					{
 						"zone1": 1,
@@ -1709,7 +1732,8 @@ func TestPreFilterStateAddPod(t *testing.T) {
 			},
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{zoneConstraint, nodeConstraint},
-				CriticalPaths: []*criticalPaths{{{"zone2", 1}, {"zone1", 3}}, {{"node-a", 1}, {"node-x", 1}}},
+				MinMatchNum:    []int{1, 1},
+				DomainsAtCount: []map[int]int{{1: 1, 3: 1}, {1: 2, 2: 1}},
 				TpValueToMatchNum: []map[string]int{
 					{
 						"zone1": 3,
@@ -1753,7 +1777,8 @@ func TestPreFilterStateAddPod(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone2", 1}, {"zone1", 2}}, {{"node-a", 0}, {"node-b", 1}}},
+				MinMatchNum:    []int{1, 0},
+				DomainsAtCount: []map[int]int{{1: 1, 2: 1}, {0: 1, 1: 1, 2: 1}},
 				TpValueToMatchNum: []map[string]int{
 					{
 						"zone1": 2,
@@ -1797,7 +1822,8 @@ func TestPreFilterStateAddPod(t *testing.T) {
 						NodeTaintsPolicy:   v1.NodeInclusionPolicyIgnore,
 					},
 				},
-				CriticalPaths: []*criticalPaths{{{"zone1", 1}, {"zone2", 1}}, {{"node-a", 1}, {"node-b", 1}}},
+				MinMatchNum:    []int{1, 1},
+				DomainsAtCount: []map[int]int{{1: 2}, {1: 2, 2: 1}},
 				TpValueToMatchNum: []map[string]int{
 					{
 						"zone1": 1,
@@ -1828,7 +1854,8 @@ func TestPreFilterStateAddPod(t *testing.T) {
 			},
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{zoneConstraint},
-				CriticalPaths: []*criticalPaths{{{"zone2", 1}, {MatchNum: math.MaxInt32}}},
+				MinMatchNum:    []int{1},
+				DomainsAtCount: []map[int]int{{1: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone2": 1,
 				}},
@@ -1852,7 +1879,8 @@ func TestPreFilterStateAddPod(t *testing.T) {
 			},
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{zoneConstraint},
-				CriticalPaths: []*criticalPaths{{{"zone2", 1}, {MatchNum: math.MaxInt32}}},
+				MinMatchNum:    []int{1},
+				DomainsAtCount: []map[int]int{{1: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone2": 1,
 				}},
@@ -1876,7 +1904,8 @@ func TestPreFilterStateAddPod(t *testing.T) {
 			},
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{zoneConstraint},
-				CriticalPaths: []*criticalPaths{{{"zone1", 1}, {"zone2", 2}}},
+				MinMatchNum:    []int{1},
+				DomainsAtCount: []map[int]int{{1: 1, 2: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone1": 1,
 					"zone2": 2,
@@ -1901,7 +1930,8 @@ func TestPreFilterStateAddPod(t *testing.T) {
 			},
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{zoneConstraint},
-				CriticalPaths: []*criticalPaths{{{"zone1", 1}, {"zone2", 2}}},
+				MinMatchNum:    []int{1},
+				DomainsAtCount: []map[int]int{{1: 1, 2: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone1": 1,
 					"zone2": 2,
@@ -1926,7 +1956,8 @@ func TestPreFilterStateAddPod(t *testing.T) {
 			},
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{zoneConstraint},
-				CriticalPaths: []*criticalPaths{{{"zone1", 1}, {"zone2", 1}}},
+				MinMatchNum:    []int{1},
+				DomainsAtCount: []map[int]int{{1: 2}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone1": 1,
 					"zone2": 1,
@@ -1951,7 +1982,8 @@ func TestPreFilterStateAddPod(t *testing.T) {
 			},
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{zoneConstraint},
-				CriticalPaths: []*criticalPaths{{{"zone1", 1}, {"zone2", 2}}},
+				MinMatchNum:    []int{1},
+				DomainsAtCount: []map[int]int{{1: 1, 2: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone2": 2,
 					"zone1": 1,
@@ -1976,7 +2008,8 @@ func TestPreFilterStateAddPod(t *testing.T) {
 			},
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{zoneConstraint},
-				CriticalPaths: []*criticalPaths{{{"zone1", 1}, {"zone2", 2}}},
+				MinMatchNum:    []int{1},
+				DomainsAtCount: []map[int]int{{1: 1, 2: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone2": 2,
 					"zone1": 1,
@@ -2062,7 +2095,8 @@ func TestPreFilterStateRemovePod(t *testing.T) {
 			nodeIdx:       0, // node-a
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{zoneConstraint},
-				CriticalPaths: []*criticalPaths{{{"zone1", 1}, {"zone2", 1}}},
+				MinMatchNum:    []int{1},
+				DomainsAtCount: []map[int]int{{1: 2}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone1": 1,
 					"zone2": 1,
@@ -2090,7 +2124,8 @@ func TestPreFilterStateRemovePod(t *testing.T) {
 			nodeIdx:       0, // node-a
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{zoneConstraint},
-				CriticalPaths: []*criticalPaths{{{"zone1", 1}, {"zone2", 2}}},
+				MinMatchNum:    []int{1},
+				DomainsAtCount: []map[int]int{{1: 1, 2: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone1": 1,
 					"zone2": 2,
@@ -2119,7 +2154,8 @@ func TestPreFilterStateRemovePod(t *testing.T) {
 			nodeIdx:       0, // node-a
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{zoneConstraint},
-				CriticalPaths: []*criticalPaths{{{"zone1", 2}, {"zone2", 2}}},
+				MinMatchNum:    []int{2},
+				DomainsAtCount: []map[int]int{{2: 2}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone1": 2,
 					"zone2": 2,
@@ -2148,7 +2184,8 @@ func TestPreFilterStateRemovePod(t *testing.T) {
 			nodeIdx:       0, // node-a
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{zoneConstraint},
-				CriticalPaths: []*criticalPaths{{{"zone1", 2}, {"zone2", 2}}},
+				MinMatchNum:    []int{2},
+				DomainsAtCount: []map[int]int{{2: 2}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone1": 2,
 					"zone2": 2,
@@ -2177,7 +2214,8 @@ func TestPreFilterStateRemovePod(t *testing.T) {
 			nodeIdx:       2, // node-x
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{zoneConstraint, nodeConstraint},
-				CriticalPaths: []*criticalPaths{{{"zone2", 1}, {"zone1", 3}}, {{"node-b", 1}, {"node-x", 1}}},
+				MinMatchNum:    []int{1, 1},
+				DomainsAtCount: []map[int]int{{1: 1, 3: 1}, {1: 2, 2: 1}},
 				TpValueToMatchNum: []map[string]int{
 					{
 						"zone1": 3,
@@ -2208,7 +2246,8 @@ func TestPreFilterStateRemovePod(t *testing.T) {
 			},
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{zoneConstraint},
-				CriticalPaths: []*criticalPaths{{{"zone2", 1}, {MatchNum: math.MaxInt32}}},
+				MinMatchNum:    []int{1},
+				DomainsAtCount: []map[int]int{{1: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone2": 1,
 				}},
@@ -2232,7 +2271,8 @@ func TestPreFilterStateRemovePod(t *testing.T) {
 			},
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{zoneConstraint},
-				CriticalPaths: []*criticalPaths{{{"zone2", 1}, {MatchNum: math.MaxInt32}}},
+				MinMatchNum:    []int{1},
+				DomainsAtCount: []map[int]int{{1: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone2": 1,
 				}},
@@ -2256,7 +2296,8 @@ func TestPreFilterStateRemovePod(t *testing.T) {
 			},
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{zoneConstraint},
-				CriticalPaths: []*criticalPaths{{{"zone2", 0}, {"zone1", 1}}},
+				MinMatchNum:    []int{0},
+				DomainsAtCount: []map[int]int{{0: 1, 1: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone2": 0,
 					"zone1": 1,
@@ -2281,7 +2322,8 @@ func TestPreFilterStateRemovePod(t *testing.T) {
 			},
 			want: &preFilterState{
 				Constraints:   []topologySpreadConstraint{zoneConstraint},
-				CriticalPaths: []*criticalPaths{{{"zone2", 0}, {"zone1", 1}}},
+				MinMatchNum:    []int{0},
+				DomainsAtCount: []map[int]int{{0: 1, 1: 1}},
 				TpValueToMatchNum: []map[string]int{{
 					"zone2": 0,
 					"zone1": 1,
@@ -2405,10 +2447,7 @@ func TestPreFilterStateMultiDomainMutations(t *testing.T) {
 
 		t.Logf("Mutation %d (add %s to %s): got minMatchNum = %d, ground truth want = %d", i, pod.Name, pod.Spec.NodeName, got, want)
 		if got != want {
-			t.Logf("DIVERGENCE at mutation index %d: state.minMatchNum returned %d, ground truth is %d", i, got, want)
-		}
-		if i == 3 && got == want {
-			t.Fatalf("expected divergence at mutation %d, but got=%d want=%d", i, got, want)
+			t.Fatalf("DIVERGENCE at mutation index %d: state.minMatchNum returned %d, ground truth is %d", i, got, want)
 		}
 	}
 
@@ -2418,10 +2457,115 @@ func TestPreFilterStateMultiDomainMutations(t *testing.T) {
 		t.Fatal(err)
 	}
 	status := p.Filter(ctx, cs, preemptor, nodeInfoForNodeA)
-	if !status.IsSuccess() {
-		t.Errorf("expected Filter to return Success due to stale cache bug, got %v", status)
+	if status.Code() != fwk.Unschedulable {
+		t.Errorf("expected Filter to return Unschedulable, got %v", status)
 	}
-	// BUG: should return Unschedulable because true minimum is 1 (skew = 2 + 1 - 1 = 2 > maxSkew(1))
+}
+
+func TestUpdateMin(t *testing.T) {
+	tests := []struct {
+		name    string
+		initial map[string]int
+		updates []struct {
+			domain string
+			delta  int
+		}
+	}{
+		{
+			name:    "decrement below the min",
+			initial: map[string]int{"a": 2, "b": 3},
+			updates: []struct {
+				domain string
+				delta  int
+			}{
+				{"a", -1}, // a: 1, b: 3 -> min 1
+			},
+		},
+		{
+			name:    "decrement of a non-min domain",
+			initial: map[string]int{"a": 1, "b": 3},
+			updates: []struct {
+				domain string
+				delta  int
+			}{
+				{"b", -1}, // a: 1, b: 2 -> min 1
+			},
+		},
+		{
+			name:    "increment of the last domain at the min",
+			initial: map[string]int{"a": 1, "b": 2},
+			updates: []struct {
+				domain string
+				delta  int
+			}{
+				{"a", 1}, // a: 2, b: 2 -> min 2
+			},
+		},
+		{
+			name:    "increment of a domain at the min while others remain there",
+			initial: map[string]int{"a": 1, "b": 1},
+			updates: []struct {
+				domain string
+				delta  int
+			}{
+				{"a", 1}, // a: 2, b: 1 -> min 1
+			},
+		},
+		{
+			name:    "interleaved multi-domain sequences",
+			initial: map[string]int{"a": 0, "b": 0, "c": 1},
+			updates: []struct {
+				domain string
+				delta  int
+			}{
+				{"a", 1},  // a: 1, b: 0, c: 1 -> min 0
+				{"b", 1},  // a: 1, b: 1, c: 1 -> min 1
+				{"a", 1},  // a: 2, b: 1, c: 1 -> min 1
+				{"b", 1},  // a: 2, b: 2, c: 1 -> min 1
+				{"c", 1},  // a: 2, b: 2, c: 2 -> min 2
+				{"a", -1}, // a: 1, b: 2, c: 2 -> min 1
+				{"b", -1}, // a: 1, b: 1, c: 2 -> min 1
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &preFilterState{
+				Constraints:       make([]topologySpreadConstraint, 1),
+				MinMatchNum:       make([]int, 1),
+				DomainsAtCount:    make([]map[int]int, 1),
+				TpValueToMatchNum: []map[string]int{maps.Clone(tt.initial)},
+			}
+			s.MinMatchNum[0] = math.MaxInt32
+			s.DomainsAtCount[0] = make(map[int]int)
+			for _, num := range s.TpValueToMatchNum[0] {
+				s.DomainsAtCount[0][num]++
+				if num < s.MinMatchNum[0] {
+					s.MinMatchNum[0] = num
+				}
+			}
+
+			for i, u := range tt.updates {
+				old := s.TpValueToMatchNum[0][u.domain]
+				cur := old + u.delta
+				s.TpValueToMatchNum[0][u.domain] = cur
+				s.updateMin(0, old, cur)
+
+				wantMin := math.MaxInt32
+				for _, num := range s.TpValueToMatchNum[0] {
+					if num < wantMin {
+						wantMin = num
+					}
+				}
+
+				if s.MinMatchNum[0] != wantMin {
+					t.Fatalf("step %d (domain=%s, delta=%d): got MinMatchNum=%d, want=%d (map=%v)",
+						i, u.domain, u.delta, s.MinMatchNum[0], wantMin, s.TpValueToMatchNum[0])
+				}
+			}
+		})
+	}
 }
 
 func BenchmarkFilter(b *testing.B) {
