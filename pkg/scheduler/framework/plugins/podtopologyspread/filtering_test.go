@@ -2331,6 +2331,99 @@ func TestPreFilterStateRemovePod(t *testing.T) {
 	}
 }
 
+
+func TestPreFilterStateMultiDomainMutations(t *testing.T) {
+	_, ctx := ktesting.NewTestContext(t)
+
+	// Cluster: three nodes, each its own domain of topology key `node`
+	// (`node-a`, `node-b`, `node-c`), one constraint `maxSkew=1, topologyKey=node,
+	// whenUnsatisfiable=DoNotSchedule, selector foo`.
+	nodes := []*v1.Node{
+		st.MakeNode().Name("node-a").Label("node", "node-a").Obj(),
+		st.MakeNode().Name("node-b").Label("node", "node-b").Obj(),
+		st.MakeNode().Name("node-c").Label("node", "node-c").Obj(),
+	}
+
+	// Existing pods: exactly one matching pod on node-c, none on node-a/node-b.
+	existingPods := []*v1.Pod{
+		st.MakePod().Name("p-c1").Node("node-c").Label("foo", "").Obj(),
+	}
+
+	preemptor := st.MakePod().Name("p").Label("foo", "").
+		SpreadConstraint(1, "node", v1.DoNotSchedule, fooSelector, nil, nil, nil, nil).
+		Obj()
+
+	snapshot := cache.NewSnapshot(existingPods, nodes)
+	pl := plugintesting.SetupPlugin(ctx, t, topologySpreadFunc, &config.PodTopologySpreadArgs{DefaultingType: config.ListDefaulting}, snapshot)
+	p := pl.(*PodTopologySpread)
+
+	nodeInfos, err := snapshot.NodeInfos().List()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cs := framework.NewCycleState()
+	if _, status := p.PreFilter(ctx, cs, preemptor, nodeInfos); !status.IsSuccess() {
+		t.Fatal(status.AsError())
+	}
+
+	state, err := getPreFilterState(cs)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Then apply four AddPod calls of matching pods, alternating domains:
+	// node-a, node-b, node-a, node-b.
+	addedPods := []*v1.Pod{
+		st.MakePod().Name("p-a1").Node("node-a").Label("foo", "").Obj(),
+		st.MakePod().Name("p-b1").Node("node-b").Label("foo", "").Obj(),
+		st.MakePod().Name("p-a2").Node("node-a").Label("foo", "").Obj(),
+		st.MakePod().Name("p-b2").Node("node-b").Label("foo", "").Obj(),
+	}
+
+	for i, pod := range addedPods {
+		nodeInfo, err := snapshot.Get(pod.Spec.NodeName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status := p.AddPod(ctx, cs, preemptor, mustNewPodInfo(t, pod), nodeInfo); !status.IsSuccess() {
+			t.Fatal(status.AsError())
+		}
+
+		// 1. Invariant assertion: compare state.minMatchNum(0, constraint.MinDomains)
+		// against ground truth computed directly from state.TpValueToMatchNum[0].
+		want := math.MaxInt32
+		for _, n := range state.TpValueToMatchNum[0] {
+			if n < want {
+				want = n
+			}
+		}
+		got, err := state.minMatchNum(0, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		t.Logf("Mutation %d (add %s to %s): got minMatchNum = %d, ground truth want = %d", i, pod.Name, pod.Spec.NodeName, got, want)
+		if got != want {
+			t.Logf("DIVERGENCE at mutation index %d: state.minMatchNum returned %d, ground truth is %d", i, got, want)
+		}
+		if i == 3 && got == want {
+			t.Fatalf("expected divergence at mutation %d, but got=%d want=%d", i, got, want)
+		}
+	}
+
+	// 2. End-to-end assertion. After the sequence, call p.Filter(ctx, cs, preemptor, nodeInfoForNodeA).
+	nodeInfoForNodeA, err := snapshot.Get("node-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := p.Filter(ctx, cs, preemptor, nodeInfoForNodeA)
+	if !status.IsSuccess() {
+		t.Errorf("expected Filter to return Success due to stale cache bug, got %v", status)
+	}
+	// BUG: should return Unschedulable because true minimum is 1 (skew = 2 + 1 - 1 = 2 > maxSkew(1))
+}
+
 func BenchmarkFilter(b *testing.B) {
 	tests := []struct {
 		name             string
