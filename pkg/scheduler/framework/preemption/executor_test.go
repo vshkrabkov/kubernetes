@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apimachinery/pkg/util/wait"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
@@ -1444,6 +1445,9 @@ func TestPreemptPod(t *testing.T) {
 		addVictimToWaiting bool
 		expectCancel       bool
 		expectedActions    []string
+		// rejectPatchOnUID makes the API server reject the status patch the way it does
+		// when the victim was deleted and recreated under the same name.
+		rejectPatchOnUID bool
 	}{
 		{
 			name:               "victim is in preBind, context should be cancelled",
@@ -1466,6 +1470,17 @@ func TestPreemptPod(t *testing.T) {
 			expectCancel:       false,
 			expectedActions:    []string{"patch", "delete"},
 		},
+		{
+			// The name now belongs to a Pod that was never selected for preemption, so the
+			// rejected patch must not be followed by a delete: util.DeletePod addresses the
+			// Pod by name only and would remove the wrong object.
+			name:               "victim was recreated, the rejected patch must not be followed by a delete",
+			addVictimToPrebind: false,
+			addVictimToWaiting: false,
+			expectCancel:       false,
+			rejectPatchOnUID:   true,
+			expectedActions:    []string{"patch"},
+		},
 	}
 
 	for _, preemptorType := range []string{"pod", "podgroup", "compositepodgroup"} {
@@ -1485,6 +1500,15 @@ func TestPreemptPod(t *testing.T) {
 					}
 				}
 				cs := clientsetfake.NewClientset(objs...)
+				if tt.rejectPatchOnUID {
+					cs.PrependReactor("patch", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
+						return true, nil, apierrors.NewInvalid(
+							v1.SchemeGroupVersion.WithKind("Pod").GroupKind(),
+							victimPod.Name,
+							field.ErrorList{field.Invalid(field.NewPath("metadata", "uid"), victimPod.UID, "field is immutable")},
+						)
+					})
+				}
 				informerFactory := informers.NewSharedInformerFactory(cs, 0)
 				eventBroadcaster := events.NewBroadcaster(&events.EventSinkImpl{Interface: cs.EventsV1()})
 				logger, ctx := ktesting.NewTestContext(t)

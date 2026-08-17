@@ -110,9 +110,17 @@ func (psuc *PodStatusPatchCall) Execute(ctx context.Context, client clientset.In
 		return nil
 	}
 
-	// It's safe to run PatchPodStatus even on outdated pod object.
-	err := util.PatchPodStatus(ctx, client, psuc.podRef.Name, psuc.podRef.Namespace, psuc.podStatus, podStatusCopy)
+	// It's safe to run PatchPodStatus on an outdated pod status, because the patch is a
+	// delta. It is not safe on an outdated pod identity, which is why the uid goes in as
+	// a precondition: this call can be executed long after it was enqueued.
+	err := util.PatchPodStatus(ctx, client, psuc.podRef.Name, psuc.podRef.Namespace, psuc.podUID, psuc.podStatus, podStatusCopy)
 	if err != nil {
+		if util.IsPodUIDMismatch(err) {
+			// The Pod was recreated with the same name, so this patch was meant for an
+			// object that no longer exists. Nothing left to do, and nothing went wrong.
+			logger.V(2).Info("Pod was recreated, its status patch was rejected", "pod", psuc.podRef, "podUID", psuc.podUID)
+			return nil
+		}
 		logger.Error(err, "Failed to patch pod status", "pod", psuc.podRef)
 		return err
 	}

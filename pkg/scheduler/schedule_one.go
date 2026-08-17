@@ -1270,7 +1270,13 @@ func (sched *Scheduler) handleSchedulingFailure(ctx context.Context, podFwk fram
 		Reason:             reason,
 		Message:            errMsg,
 	}, nominatingInfo); err != nil {
-		utilruntime.HandleErrorWithContext(ctx, err, "Error updating pod", "pod", klog.KObj(pod))
+		if util.IsPodUIDMismatch(err) {
+			// The Pod was recreated with the same name after the check above, so the API
+			// server rejected the patch. That is the precondition doing its job.
+			logger.V(2).Info("Pod was recreated before its status patch was applied. The patch was rejected.", "pod", klog.KObj(pod), "podUID", pod.UID)
+		} else {
+			utilruntime.HandleErrorWithContext(ctx, err, "Error updating pod", "pod", klog.KObj(pod))
+		}
 	}
 }
 
@@ -1315,5 +1321,5 @@ func updatePod(ctx context.Context, client clientset.Interface, apiCacher fwk.AP
 	if nnnNeedsUpdate {
 		podStatusCopy.NominatedNodeName = nominatingInfo.NominatedNodeName
 	}
-	return util.PatchPodStatus(ctx, client, pod.Name, pod.Namespace, &pod.Status, podStatusCopy)
+	return util.PatchPodStatus(ctx, client, pod.Name, pod.Namespace, pod.UID, &pod.Status, podStatusCopy)
 }

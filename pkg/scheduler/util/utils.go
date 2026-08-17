@@ -19,6 +19,7 @@ package util
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"strings"
 	"time"
@@ -107,6 +108,27 @@ func RetriableWithConflict(err error) bool {
 	return Retriable(err) || apierrors.IsConflict(err)
 }
 
+// IsPodUIDMismatch reports whether err is the API server rejecting a Pod status patch
+// because of the uid precondition set by PatchPodStatus, i.e. the Pod was deleted and
+// recreated with the same namespace/name while the patch was being prepared. The Pod
+// the caller meant to patch no longer exists, which is an expected outcome rather than
+// a scheduler failure.
+func IsPodUIDMismatch(err error) bool {
+	if !apierrors.IsInvalid(err) {
+		return false
+	}
+	var status apierrors.APIStatus
+	if !stderrors.As(err, &status) || status.Status().Details == nil {
+		return false
+	}
+	for _, cause := range status.Status().Details.Causes {
+		if cause.Field == "metadata.uid" {
+			return true
+		}
+	}
+	return false
+}
+
 // BindPod binds a pod to a node with retry.
 func BindPod(ctx context.Context, cs kubernetes.Interface, binding *v1.Binding) error {
 	bindFn := func() error {
@@ -118,7 +140,12 @@ func BindPod(ctx context.Context, cs kubernetes.Interface, binding *v1.Binding) 
 
 // PatchPodStatus calculates the delta bytes change from <old.Status> to <newStatus>,
 // and then submit a request to API server to patch the pod changes.
-func PatchPodStatus(ctx context.Context, cs kubernetes.Interface, name string, namespace string, oldStatus *v1.PodStatus, newStatus *v1.PodStatus) error {
+//
+// The uid is sent as a precondition, so that a patch prepared for one Pod can never
+// be applied to a different Pod that happens to reuse its namespace/name. Every Pod
+// the scheduler patches comes from the API server, so the uid is expected to be set;
+// an empty uid disables the precondition and is only ever seen in tests.
+func PatchPodStatus(ctx context.Context, cs kubernetes.Interface, name string, namespace string, uid types.UID, oldStatus *v1.PodStatus, newStatus *v1.PodStatus) error {
 	if newStatus == nil {
 		return nil
 	}
@@ -132,7 +159,11 @@ func PatchPodStatus(ctx context.Context, cs kubernetes.Interface, name string, n
 		return err
 	}
 
-	newData, err := json.Marshal(v1.Pod{Status: *newStatus})
+	newData, err := json.Marshal(v1.Pod{
+		// Only put the uid in the new object to ensure it appears in the patch as a precondition.
+		ObjectMeta: metav1.ObjectMeta{UID: uid},
+		Status:     *newStatus,
+	})
 	if err != nil {
 		return err
 	}
@@ -141,7 +172,8 @@ func PatchPodStatus(ctx context.Context, cs kubernetes.Interface, name string, n
 		return fmt.Errorf("failed to create merge patch for pod %q/%q: %w", namespace, name, err)
 	}
 
-	if "{}" == string(patchBytes) {
+	// The precondition is not itself a change, so a patch carrying nothing but the uid is a no-op.
+	if string(patchBytes) == fmt.Sprintf(`{"metadata":{"uid":%q}}`, uid) {
 		return nil
 	}
 

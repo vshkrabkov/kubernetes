@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -176,6 +177,10 @@ func TestPatchPodStatus(t *testing.T) {
 		validateErr    func(goterr error) bool
 		statusToUpdate v1.PodStatus
 		nilOldStatus   bool
+		// wantPatchContains, when set, is asserted to be a substring of the patch body.
+		wantPatchContains string
+		// wantNoPatch asserts that no patch request was issued at all.
+		wantNoPatch bool
 	}{
 		{
 			name:   "Should update pod conditions successfully",
@@ -321,6 +326,56 @@ func TestPatchPodStatus(t *testing.T) {
 			},
 			nilOldStatus: true,
 		},
+		{
+			name:   "pod UID is sent as a patch precondition",
+			client: clientsetfake.NewClientset(),
+			pod: v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "ns",
+					Name:      "pod1",
+					UID:       "uid-a",
+				},
+			},
+			statusToUpdate: v1.PodStatus{
+				Conditions: []v1.PodCondition{
+					{
+						Type:   v1.PodScheduled,
+						Status: v1.ConditionFalse,
+					},
+				},
+			},
+			wantPatchContains: `"metadata":{"uid":"uid-a"}`,
+		},
+		{
+			// Guards the no-op short-circuit: with a UID set, an unchanged status still
+			// produces a non-empty patch body carrying only the precondition.
+			name:   "unchanged status issues no request even though the patch carries a UID",
+			client: clientsetfake.NewClientset(),
+			pod: v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "ns",
+					Name:      "pod1",
+					UID:       "uid-a",
+				},
+				Status: v1.PodStatus{
+					Conditions: []v1.PodCondition{
+						{
+							Type:   v1.PodScheduled,
+							Status: v1.ConditionFalse,
+						},
+					},
+				},
+			},
+			statusToUpdate: v1.PodStatus{
+				Conditions: []v1.PodCondition{
+					{
+						Type:   v1.PodScheduled,
+						Status: v1.ConditionFalse,
+					},
+				},
+			},
+			wantNoPatch: true,
+		},
 	}
 
 	for _, tc := range tests {
@@ -330,6 +385,12 @@ func TestPatchPodStatus(t *testing.T) {
 			defer cancel()
 
 			client := tc.client
+			var patches [][]byte
+			client.PrependReactor("patch", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
+				patches = append(patches, action.(clienttesting.PatchAction).GetPatch())
+				// Fall through to the reactors the test case installed, if any.
+				return false, nil, nil
+			})
 			_, err := client.CoreV1().Pods(tc.pod.Namespace).Create(context.TODO(), &tc.pod, metav1.CreateOptions{})
 			if err != nil {
 				t.Fatal(err)
@@ -339,7 +400,7 @@ func TestPatchPodStatus(t *testing.T) {
 			if tc.nilOldStatus {
 				oldStatus = nil
 			}
-			err = PatchPodStatus(ctx, client, tc.pod.Name, tc.pod.Namespace, oldStatus, &tc.statusToUpdate)
+			err = PatchPodStatus(ctx, client, tc.pod.Name, tc.pod.Namespace, tc.pod.UID, oldStatus, &tc.statusToUpdate)
 			if err != nil && tc.validateErr == nil {
 				// shouldn't be error
 				t.Fatal(err)
@@ -349,6 +410,21 @@ func TestPatchPodStatus(t *testing.T) {
 					t.Fatalf("Returned unexpected error: %v", err)
 				}
 				return
+			}
+
+			if tc.wantNoPatch {
+				if len(patches) != 0 {
+					t.Fatalf("Expected no patch request, got %d: %s", len(patches), patches)
+				}
+				return
+			}
+			if tc.wantPatchContains != "" {
+				if len(patches) == 0 {
+					t.Fatalf("Expected a patch request, got none")
+				}
+				if got := string(patches[0]); !strings.Contains(got, tc.wantPatchContains) {
+					t.Errorf("Patch body %s does not contain %s", got, tc.wantPatchContains)
+				}
 			}
 
 			retrievedPod, err := client.CoreV1().Pods(tc.pod.Namespace).Get(ctx, tc.pod.Name, metav1.GetOptions{})
