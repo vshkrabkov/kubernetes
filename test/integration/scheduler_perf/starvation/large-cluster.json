@@ -1,0 +1,201 @@
+{
+  "version": "v1",
+  "dataItems": [
+    {
+      "data": {
+        "Average": 0.9999988232770898,
+        "Perc50": 1.0000022780051894,
+        "Perc90": 1.0005506880904647,
+        "Perc95": 1.0008967474354844,
+        "Perc99": 1.0044525745371535
+      },
+      "unit": "pods/s",
+      "labels": {
+        "Metric": "SchedulingThroughput",
+        "Name": "BenchmarkPerfScheduling/StarvationIndependent/10000Nodes_10000Cloggers/victim",
+        "result": "not applicable"
+      }
+    },
+    {
+      "data": {
+        "Average": 129.307637706,
+        "Perc50": 31.794871794871796,
+        "Perc90": 498.40707964601773,
+        "Perc95": 569.2035398230089,
+        "Perc99": 625.8407079646017
+      },
+      "unit": "ms",
+      "labels": {
+        "Metric": "scheduler_pod_scheduling_sli_duration_seconds",
+        "Name": "BenchmarkPerfScheduling/StarvationIndependent/10000Nodes_10000Cloggers/victim",
+        "result": "not applicable"
+      }
+    },
+    {
+      "data": {
+        "Average": 83.89273338200009,
+        "Perc50": 23.69465648854962,
+        "Perc90": 398.72566371681415,
+        "Perc95": 455.3628318584071,
+        "Perc99": 500.67256637168146
+      },
+      "unit": "ms",
+      "labels": {
+        "Metric": "scheduler_scheduling_attempt_duration_seconds",
+        "Name": "BenchmarkPerfScheduling/StarvationIndependent/10000Nodes_10000Cloggers/victim",
+        "result": "scheduled"
+      }
+    },
+    {
+      "data": {
+        "Average": 9.362992537730925,
+        "Perc50": 7.985108583247157,
+        "Perc90": 15.089833641404807,
+        "Perc95": 15.980221811460256,
+        "Perc99": 42.47188405797098
+      },
+      "unit": "ms",
+      "labels": {
+        "Metric": "scheduler_scheduling_attempt_duration_seconds",
+        "Name": "BenchmarkPerfScheduling/StarvationIndependent/10000Nodes_10000Cloggers/victim",
+        "result": "unschedulable"
+      }
+    },
+    {
+      "data": {
+        "Average": 1188.9657017118864,
+        "Max": 1391.140625,
+        "Perc50": 1185.7890625,
+        "Perc90": 1291.3984375,
+        "Perc95": 1319.8046875,
+        "Perc99": 1377.203125
+      },
+      "unit": "MB",
+      "labels": {
+        "Metric": "heap_memory_usage",
+        "Name": "BenchmarkPerfScheduling/StarvationIndependent/10000Nodes_10000Cloggers/victim",
+        "result": "not applicable"
+      }
+    },
+    {
+      "data": {
+        "GrowthRate": 119.04455176934407
+      },
+      "unit": "MB/min",
+      "labels": {
+        "Metric": "memory_growth_rate",
+        "Name": "BenchmarkPerfScheduling/StarvationIndependent/10000Nodes_10000Cloggers/victim",
+        "result": "not applicable"
+      }
+    },
+    {
+      "data": {
+        "Duration": 193.421269519
+      },
+      "unit": "s",
+      "labels": {
+        "Metric": "SchedulingDuration",
+        "Name": "BenchmarkPerfScheduling/StarvationIndependent/10000Nodes_10000Cloggers/victim",
+        "result": "not applicable"
+      }
+    },
+    {
+      "data": {
+        "Average": 0.7500793407475027,
+        "Perc50": 0.499836680114201,
+        "Perc90": 1.0006571695882411,
+        "Perc95": 1.0006571695882411,
+        "Perc99": 1.0006571695882411
+      },
+      "unit": "pods/s",
+      "labels": {
+        "Metric": "SchedulingThroughput",
+        "Name": "BenchmarkPerfScheduling/StarvationIndependent/10000Nodes_10000Cloggers_async/victim",
+        "result": "not applicable"
+      }
+    },
+    {
+      "data": {
+        "Average": 22469.14306825237,
+        "Perc50": 25163.990267639903,
+        "Perc90": 37800.798053527986,
+        "Perc95": 39380.39902676399,
+        "Perc99": 40644.0798053528
+      },
+      "unit": "ms",
+      "labels": {
+        "Metric": "scheduler_pod_scheduling_sli_duration_seconds",
+        "Name": "BenchmarkPerfScheduling/StarvationIndependent/10000Nodes_10000Cloggers_async/victim",
+        "result": "not applicable"
+      }
+    },
+    {
+      "data": {
+        "Average": 22456.83823815457,
+        "Perc50": 16384,
+        "Perc90": 16384,
+        "Perc95": 16384,
+        "Perc99": 16384
+      },
+      "unit": "ms",
+      "labels": {
+        "Metric": "scheduler_scheduling_attempt_duration_seconds",
+        "Name": "BenchmarkPerfScheduling/StarvationIndependent/10000Nodes_10000Cloggers_async/victim",
+        "result": "scheduled"
+      }
+    },
+    {
+      "data": {
+        "Average": 9.464238041011418,
+        "Perc50": 8.08240648848431,
+        "Perc90": 15.297382019780294,
+        "Perc95": 19.911588847833368,
+        "Perc99": 44.18650887573952
+      },
+      "unit": "ms",
+      "labels": {
+        "Metric": "scheduler_scheduling_attempt_duration_seconds",
+        "Name": "BenchmarkPerfScheduling/StarvationIndependent/10000Nodes_10000Cloggers_async/victim",
+        "result": "unschedulable"
+      }
+    },
+    {
+      "data": {
+        "Average": 1527.9342447916667,
+        "Max": 1768.3828125,
+        "Perc50": 1482.1640625,
+        "Perc90": 1704.6796875,
+        "Perc95": 1768.3828125,
+        "Perc99": 1768.3828125
+      },
+      "unit": "MB",
+      "labels": {
+        "Metric": "heap_memory_usage",
+        "Name": "BenchmarkPerfScheduling/StarvationIndependent/10000Nodes_10000Cloggers_async/victim",
+        "result": "not applicable"
+      }
+    },
+    {
+      "data": {
+        "GrowthRate": 1565.7571281500661
+      },
+      "unit": "MB/min",
+      "labels": {
+        "Metric": "memory_growth_rate",
+        "Name": "BenchmarkPerfScheduling/StarvationIndependent/10000Nodes_10000Cloggers_async/victim",
+        "result": "not applicable"
+      }
+    },
+    {
+      "data": {
+        "Duration": 5.516506324
+      },
+      "unit": "s",
+      "labels": {
+        "Metric": "SchedulingDuration",
+        "Name": "BenchmarkPerfScheduling/StarvationIndependent/10000Nodes_10000Cloggers_async/victim",
+        "result": "not applicable"
+      }
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 - name: StarvationIndependent
+  schedulerConfigPath: scheduler-config-qps100.yaml
   metricsCollectorConfig:
     metrics:
       scheduler_queue_incoming_pods_total:
@@ -9,6 +10,7 @@
       scheduler_scheduling_attempt_duration_seconds:
       - label: result
         values: [scheduled, unschedulable, error]
+      scheduler_pod_scheduling_sli_duration_seconds:
   workloadTemplate:
   - opcode: createNodes
     countParam: $initNodes
@@ -45,12 +47,32 @@
   - opcode: stopCollectingMetrics
   workloads:
   - name: 10Nodes_100Cloggers
+    featureGates:
+      SchedulerAsyncAPICalls: false
+    labels: [integration-test, short]
+    params:
+      initNodes: 10
+      cloggerPods: 100
+      starvationProne: 50  
+  - name: 10Nodes_100Cloggers_async
+    featureGates:
+      SchedulerAsyncAPICalls: true
     labels: [integration-test, short]
     params:
       initNodes: 10
       cloggerPods: 100
       starvationProne: 50
   - name: 10000Nodes_10000Cloggers
+    featureGates:
+      SchedulerAsyncAPICalls: false
+    labels: [performance]
+    params:
+      initNodes: 10000
+      cloggerPods: 10000
+      starvationProne: 500  
+  - name: 10000Nodes_10000Cloggers_async
+    featureGates:
+      SchedulerAsyncAPICalls: true
     labels: [performance]
     params:
       initNodes: 10000

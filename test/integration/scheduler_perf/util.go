@@ -129,6 +129,15 @@ func mustSetupCluster(tCtx ktesting.TContext, config *config.KubeSchedulerConfig
 	cfg.QPS = 5000.0
 	cfg.Burst = 5000
 
+	if config != nil {
+		if config.ClientConnection.QPS > 0 {
+			cfg.QPS = config.ClientConnection.QPS
+		}
+		if config.ClientConnection.Burst > 0 {
+			cfg.Burst = int(config.ClientConnection.Burst)
+		}
+	}
+
 	// use default component config if config here is nil
 	if config == nil {
 		var err error
