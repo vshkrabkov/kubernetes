@@ -2205,9 +2205,12 @@ func podListContainsPod(list []*v1.Pod, pod *v1.Pod) bool {
 }
 
 func TestScheduleOne_PodUpdateDuringBindingCycle(t *testing.T) {
-	testNode := v1.Node{ObjectMeta: metav1.ObjectMeta{Name: "machine1", UID: types.UID("machine1")}}
+	testNode := *st.MakeNode().Name("machine1").UID("machine1").Obj()
 	scheduleResultOk := ScheduleResult{SuggestedHost: testNode.Name}
-	bindingOk := &v1.Binding{ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "pod1", UID: types.UID("pod1")}, Target: v1.ObjectReference{Kind: "Node", Name: testNode.Name}}
+	bindingOk := &v1.Binding{Target: v1.ObjectReference{Kind: "Node", Name: testNode.Name}}
+	bindingOk.Namespace = "ns"
+	bindingOk.Name = "pod1"
+	bindingOk.UID = types.UID("pod1")
 
 	tests := []struct {
 		name                  string
@@ -2310,6 +2313,7 @@ func TestScheduleOne_PodUpdateDuringBindingCycle(t *testing.T) {
 				Profiles:         profile.Map{testSchedulerName: schedFramework},
 				nodeInfoSnapshot: internalcache.NewEmptySnapshot(),
 			}
+			sched.initAlgorithm()
 			sched.FailureHandler = sched.handleSchedulingFailure
 			sched.SchedulePod = func(ctx context.Context, fwk framework.Framework, state fwk.CycleState, podInfo *framework.QueuedPodInfo) (ScheduleResult, error) {
 				return scheduleResultOk, nil

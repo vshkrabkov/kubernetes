@@ -5891,13 +5891,7 @@ func TestPriorityQueue_GetPod(t *testing.T) {
 			Namespace: "default",
 		},
 	}
-	inFlightPod := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "pod5",
-			Namespace: "default",
-			UID:       "pod5",
-		},
-	}
+	inFlightPod := st.MakePod().Name("pod5").Namespace("default").UID("pod5").Obj()
 
 	logger, ctx := ktesting.NewTestContext(t)
 	q := NewTestQueue(ctx, newDefaultQueueSort())
