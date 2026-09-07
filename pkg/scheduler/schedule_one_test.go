@@ -3026,8 +3026,22 @@ func TestUpdatePodStatus(t *testing.T) {
 					apiCacher = apicache.New(queue, nil)
 				}
 
-				if err := updatePod(ctx, cs, apiCacher, pod, test.newPodCondition, test.newNominatingInfo); err != nil {
-					t.Fatalf("Error calling update: %v", err)
+				if apiCacher == nil {
+					if err := patchPodStatusSync(ctx, cs, pod, test.newPodCondition, test.newNominatingInfo); err != nil {
+						t.Fatalf("Failed to patch pod status: %v", err)
+					}
+				} else {
+					var conditions []*v1.PodCondition
+					if test.newPodCondition != nil {
+						conditions = []*v1.PodCondition{test.newPodCondition}
+					}
+					onFinish, err := apiCacher.PatchPodStatus(pod, conditions, test.newNominatingInfo)
+					if err != nil {
+						t.Fatalf("Failed to enqueue pod status patch: %v", err)
+					}
+					if err := apiCacher.WaitOnFinish(ctx, onFinish); err != nil {
+						t.Fatalf("Pod status patch failed: %v", err)
+					}
 				}
 
 				if test.expectPatchRequest {
